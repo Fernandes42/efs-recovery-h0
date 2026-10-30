@@ -1,0 +1,115 @@
+schema_version = "1.1"
+
+# Paths copied from the agent's container into the verifier's. The verifier does
+# NOT inherit the agent's filesystem -- that is the point of separate mode -- so
+# anything the grader reads has to be listed here. Paths re-materialize at the
+# same absolute location inside the verifier.
+#
+# UNCOMMENT AND FILL IN once you know what your grader reads. Until then the
+# grader receives only the /logs/artifacts convention dir, so a run that should
+# pass scores 0 and artifacts/manifest.json shows why.
+#
+# One absolute path per file. Do NOT reach for a whole directory such as
+# ["/app"]: harbor empties the target before uploading a directory, destroying
+# whatever the verifier image baked there and leaving it world-writable, and it
+# carries every agent-written file across -- including one that shadows a module
+# the grader imports. File artifacts overwrite in place with no wipe.
+#
+# Never list a path under /tests: the upload runs before test.sh, and separate
+# mode never re-lays the real tests, so the agent's file BECOMES the grader.
+#
+# Every path here needs its IMMEDIATE parent directory to exist in the verifier
+# image already -- the upload is a docker cp, which creates none. tests/Dockerfile
+# creates /app, so /app/result.json works as-is; /app/out/result.json also needs
+# /app/out added there, or the trial fails with "Could not find the file /app/out
+# in container".
+#
+# Uncomment in place. Above the first table header is the only position where a
+# bare artifacts key is top-level; written after one it belongs to that table,
+# and [verifier].artifacts is a field harbor does not define, so it is dropped
+# with no error and the grader silently receives nothing.
+artifacts = [
+  "/app/candidate/src/efs_impl.h",
+  "/app/candidate/src/efs_impl.cpp",
+]
+
+[task]
+name = "efs/efs-recovery-h0"
+description = ""
+# Required task classification. Fill every blank value before validation.
+# Classification values verified against the generated contract:
+# nest/apps/codimango/lib/coding-acceleration/task-toml-schemas/
+# subschemas/manifest-classification-contract.schema.json
+# PROPOSED DEFAULT (confirm): H0-only canonical reward. Profiles H1-H5
+# ship in the bundle for context; extending the reward to H1-H5 scales
+# verifier timeout and agent budget with it.
+track_assignment = "cyber-security"
+workstream = "cyber_bench"
+format = "terminal_bench_single_turn"
+authors = []
+keywords = []
+
+[metadata]
+author_name = "Josh Fernandes"
+author_email = "jfernandes33@meta.com"
+# Coding Data Taxonomy. Fill before validation: each axis takes up to 3
+# values, and category_subcategory is required for each sub-domain that has
+# sub-categories, keyed by that sub-domain.
+category_usecase = ["logic_errors"]  # faulty crash-consistency logic
+category_subdomain = ["security_and_privacy"]  # encrypted FS, tenant isolation
+category_subcategory = { security_and_privacy = ["encryption"] }
+reward_type = "binary"
+
+[verifier]
+# Grading runs in a fresh container built from tests/, not the one the agent
+# worked in, so agent-phase state cannot reach the grader: no pre-planted reward
+# file, no poisoned interpreter, no readable oracle under /tests.
+#
+# This REQUIRES tests/Dockerfile, which was scaffolded alongside it. Deleting
+# that file without also removing this line does not fail cleanly -- the trial
+# errors at environment construction, and the message names environment/ rather
+# than tests/.
+environment_mode = "separate"
+# Sealed-split grade budget: staged image build (~10-30 s) + H0 sealed
+# matrix (~10 s) + adversarial set (~40 s) + harness overhead.
+timeout_sec = 600.0
+# The harness runs as root (it must stage the read-only candidate root
+# and attest the pre-exec boundary); candidate code executes ONLY inside
+# the fixed chroot as UID/GID 60001 (empty groups, zero capabilities,
+# no_new_privs, task-owned seccomp allowlist, resource bounds), compiled
+# under UID/GID 60002. No namespaces or mounts are requested; the runtime's
+# existing controls are unchanged (see tests/patches/runtime-boundary.md).
+# This is NOT the template's Flow-B OS-user recipe: the old efsgrade/chmod
+# dance is gone (no `user=` line, no efsgrade user in tests/Dockerfile), and
+# in-process grading is NOT an accepted fallback -- a refused boundary
+# fails INFRA via the harness, never a downgraded grade.
+# (The template's Flow-B comment below is superseded by the design above;
+# it is kept for provenance. No `user=` line: the harness must stay root
+# to stage the candidate root and attest the boundary.)
+# Do NOT drop the grader to a non-root user on TBR: VMVM flattens file
+# ownership to 0:0, so a non-root grader loses read access to the files it has
+# to grade.
+# user = "nobody"
+
+[agent]
+# PROPOSED DEFAULT (confirm): single-turn repair budget for a ~10 KLOC
+# project with 3 planted defects. 1 h is the starting point, not a
+# measured requirement.
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 4
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+# The agent bundle is fully baked (toolchain + dev lib); grading makes no
+# network calls. Closed network shrinks the exfil/cheat surface.
+allow_internet = false
+mcp_servers = []
+
+[verifier.env]
+
+[environment.env]
+
+[solution.env]

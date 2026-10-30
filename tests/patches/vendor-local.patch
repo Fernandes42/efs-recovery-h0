@@ -1,0 +1,1766 @@
+--- a/grader/sealed_run.cpp
++++ b/grader/sealed_run.cpp
+@@ -142,7 +142,21 @@
+   // same defines, no operator-controlled include paths or libraries.
+   std::string extra;
+   if (const char* e = getenv("EFS_SEALED_CXXFLAGS")) extra = " " + std::string(e);
+-  std::string cmd = "g++ -std=c++20 -O2" + extra + " -I " +
++  // Parse/compile submitted text under a separate, bounded identity. Hidden
++  // /tests and the root-private grading scratch are inaccessible to it.
++  const std::string compile = staging + "/compile";
++  if (RunCmd("mkdir -p " + ShellQuote(compile) +
++      " && chown 60002:60002 " + ShellQuote(compile) +
++      " && chmod 0700 " + ShellQuote(compile)) != 0)
++    throw std::runtime_error("sealed compiler workspace setup failed");
++  std::string cmd = "cd " + ShellQuote(staging) +
++      " && /usr/bin/timeout 60 /usr/bin/prlimit --cpu=45 --as=2147483648 "
++      "--fsize=67108864 --nproc=64 --core=0 -- /usr/bin/env -i "
++      "PATH=/usr/bin:/bin HOME=" + ShellQuote(compile) +
++      " TMPDIR=" + ShellQuote(compile) +
++      " /usr/bin/setpriv --reuid=60002 --regid=60002 --clear-groups "
++      "--no-new-privs --bounding-set=-all --inh-caps=-all --ambient-caps=-all "
++      "/usr/bin/g++ -std=c++20 -O2" + extra + " -I " +
+                     ShellQuote(staging + "/include") + " -I " +
+                     ShellQuote(staging) + " " +
+                     ShellQuote(staging + "/sealed/rpc.cpp") + " " +
+@@ -151,12 +165,17 @@
+                     ShellQuote(staging + "/sealed/service_proxy.cpp") + " " +
+                     ShellQuote(staging + "/sealed/candidate_main.cpp") + " " +
+                     ShellQuote(staging + "/" + impl) + " -o " +
+-                    ShellQuote(staging + "/image") +
++                    ShellQuote(compile + "/image") +
+                     (factory == "reference" ? " -DUSE_REFERENCE" : "") +
+                     extra;
+   std::string log;
+   if (RunCmd(cmd, &log) != 0)
+     throw std::runtime_error("sealed build failed:\n" + log);
++  if (RunCmd("mv " + ShellQuote(compile + "/image") + " " +
++      ShellQuote(staging + "/image") + " && chown 0:0 " +
++      ShellQuote(staging + "/image") + " && chmod 0555 " +
++      ShellQuote(staging + "/image") + " && rm -rf " + ShellQuote(compile)) != 0)
++    throw std::runtime_error("sealed executable protection failed");
+   return staging;
+ }
+ 
+@@ -285,8 +304,14 @@
+       "trusted/admin.h", "trusted/world.h", "trusted/impl.h",
+       "trusted/crypto_broker.cpp", "grader/sealed_run.cpp",
+       "grader/suites.h", "grader/suites_oracle.cpp",
+-      "reports/evidence_H0_reference.json",
+-      "reports/evidence_H0_candidate.json", "profiles/H0.json",
++      // NOTE (wrapper vendor tree): reports/evidence_*.json are
++      // authoring evidence, deliberately NOT vendored (the verifier
++      // image must not ship past verdicts an agent could read back
++      // through a boundary failure). The snooper's Phase-A efficacy
++      // gate needs paths that EXIST in the tree it probes, so the
++      // evidence entries from the host list are replaced here by two
++      // manifest-pinned oracle sources that must equally be denied.
++      "trusted/allocator.cpp", "trusted/world.cpp", "profiles/H0.json",
+       "profiles/budgets.json", "packaging/source_manifest.json",
+       "candidate/src/efs_impl.cpp"};
+   std::string bin = workdir + "/adv_snoop";
+@@ -319,7 +344,7 @@
+     check(Contains(bbody, "OPENED ABS " + repo + "/" + p),
+           "base reads " + p);
+   check(Contains(bbody, "OPENED CTL /etc/passwd"), "base ctl passwd");
+-  check(Contains(bbody, "denied CTL /etc/shadow"), "base ctl shadow");
++  check(Contains(bbody, "OPENED CTL /etc/shadow"), "trusted-root base ctl shadow");
+   check(Contains(bbody, "OPENED REL sealed/rpc.h"), "base ctl rel");
+   // Phase B: sandboxed — the same reads must all fail.
+   // High-fd marker: dup /dev/null onto fd 2000 before spawning. The old
+@@ -332,7 +357,7 @@
+     highfd = fcntl(marker, F_DUPFD, 2000);
+     close(marker);
+   }
+-  std::string result = staging + "/snoop.result";
++  std::string result = staging + "/work/snoop.result";
+   RunCmd("rm -f " + ShellQuote(result));
+   try {
+     sealed::Spawned sp = sealed::SpawnSandboxed(bin.c_str(), staging,
+@@ -351,102 +376,33 @@
+   for (auto& p :
+        {"reference/efs_impl.h", "reference/efs_impl.cpp",
+         "trusted/admin.h", "trusted/world.h", "trusted/impl.h",
++        "trusted/allocator.cpp", "trusted/world.cpp",
+         "grader/sealed_run.cpp", "grader/suites.h",
+-        "reports/evidence_H0_reference.json", "../reference", "../trusted",
++        "profiles/H0.json", "profiles/budgets.json",
++        "../reference", "../trusted",
+         "../grader"})
+     check(Contains(body, std::string("denied REL ") + p),
+           std::string("denied view ") + p);
+-  // Namespace-local /proc resolves only sandbox processes: the /proc
+-  // boundary holds while the runtime keeps its own maps. The parent
+-  // pid lives in another namespace (hidepid hides even ns peers), so
+-  // cross-process snooping stays denied.
++  // This candidate root exposes no procfs. The read/process/network
++  // isolation outcome is enforced without requesting denied namespaces.
+   for (auto& p : {"/proc/self/environ", "/proc/self/cmdline",
+                   "/proc/self/maps", "/proc/self/fd", "/proc/net/tcp"})
+-    check(Contains(body, std::string("OPENED PROC ") + p),
+-          std::string("ns-local proc ") + p);
+-  // Namespace init (pid 1) is the documented exception: uid-mapped
+-  // sandboxes run as namespace-root, which hidepid=2 permits to see
+-  // ns-local init. Its argv is sandbox-local staging paths only.
+-  check(Contains(body, "OPENED PROC /proc/1/cmdline"), "ns-init visible");
+-  // No other /proc path may resolve: scan every opened PROC line
+-  // against the namespace-local allowlist (self + ns-init + empty net
+-  // tables). In particular no host pid (including the grader's) may
+-  // appear.
+-  {
+-    bool proc_ok = true;
+-    size_t at = 0;
+-    while (at < body.size()) {
+-      size_t eol = body.find('\n', at);
+-      std::string line = body.substr(
+-          at, eol == std::string::npos ? eol : eol - at);
+-      if (line.rfind("OPENED PROC ", 0) == 0) {
+-        std::string tgt = line.substr(12);
+-        bool good = tgt == "/proc/self/environ" ||
+-                    tgt == "/proc/self/cmdline" ||
+-                    tgt == "/proc/self/maps" || tgt == "/proc/self/fd" ||
+-                    tgt == "/proc/net/tcp" || tgt == "/proc/1/cmdline";
+-        if (!good) proc_ok = false;
+-      }
+-      if (eol == std::string::npos) break;
+-      at = eol + 1;
+-    }
+-    check(proc_ok, "no host pids visible via proc");
+-    // PID-namespace confinement: the double's parent must be the
+-    // namespace init (ppid=1). A host pid here would mean the process
+-    // escaped its PID namespace. The ns-init's own cmdline resolving
+-    // (OPENED above) is the documented exception, not a leak.
+-    check(Contains(body, "ppid=1\n"), "parent is namespace init");
+-  }
++    check(Contains(body, std::string("denied PROC ") + p),
++          std::string("proc absent ") + p);
++  check(!Contains(body, "OPENED PROC "), "no process visibility through proc");
++  for (auto& probe : {"write_reward=denied", "read_tests=denied",
++                      "fork=denied", "setsid=denied", "socket=denied"})
++    check(Contains(body, probe), std::string("negative boundary ") + probe);
+   check(Contains(body, "denied CTL /etc/passwd"), "denied ctl passwd");
+   check(Contains(body, "denied CTL /etc/shadow"), "denied ctl shadow");
+   // Positive control: staging-local reads still work, so denials mean
+   // containment rather than a broken double.
+   check(Contains(body, "OPENED REL sealed/rpc.h"), "control opens");
+   check(Contains(body, "fds_extra=0"), "no inherited fds");
+-  // Every inherited descriptor must resolve to a pipe, socket, null,
+-  // or the double's own output — never a host file.
+-  {
+-    bool fds_ok = false;
+-    auto pos = body.find("fd_targets=");
+-    if (pos != std::string::npos) {
+-      auto eol = body.find('\n', pos);
+-      std::string line = body.substr(pos, eol - pos);
+-      fds_ok = true;
+-      auto lb = line.find('[');
+-      if (lb != std::string::npos) {
+-        std::string list = line.substr(lb + 1);
+-        size_t at = 0;
+-        while (at < list.size()) {
+-          size_t cm = list.find(',', at);
+-          std::string e =
+-              list.substr(at, cm == std::string::npos ? cm : cm - at);
+-          auto ar = e.find("->");
+-          std::string tgt = ar == std::string::npos ? "" : e.substr(ar + 2);
+-          bool good = tgt.rfind("pipe:", 0) == 0 ||
+-                      tgt.rfind("socket:", 0) == 0 ||
+-                      tgt.rfind("anon_inode:", 0) == 0 || tgt == "/dev/null" ||
+-                      tgt.size() >= 12 &&
+-                          tgt.compare(tgt.size() - 12, 12,
+-                                      "snoop.result") == 0;
+-          if (!good) fds_ok = false;
+-          if (cm == std::string::npos) break;
+-          at = cm + 1;
+-        }
+-      }
+-    }
+-    check(fds_ok, "fd targets have no host files");
+-  }
+-  // Namespace network tables: header only, no peers.
+-  {
+-    bool net_ok = false;
+-    auto pos = body.find("net_tcp_lines=");
+-    if (pos != std::string::npos) {
+-      int v = std::stoi(body.substr(pos + 14));
+-      net_ok = v >= 0 && v <= 2;
+-    }
+-    check(net_ok, "net tables peer-free");
+-  }
+-  check(Contains(body, "opened_total=7"), "only control+ns-proc open");
++  // No procfs means no descriptor-target or network-table disclosure.
++  // High descriptors are probed via fcntl, including the planted fd 2000.
++  check(Contains(body, "net_tcp_lines=-1"), "no network-table visibility");
++  check(Contains(body, "opened_total=1"), "only staging control opens");
+   return ok;
+ }
+ 
+@@ -466,7 +422,7 @@
+   efs::World world;
+   // Spawn first, then serve over the real channel.
+   sealed::Spawned sp = sealed::SpawnSandboxed(
+-      bin.c_str(), staging, {staging, "77411", staging + "/reuse.result"});
++      bin.c_str(), staging, {staging, "77411", staging + "/work/reuse.result"});
+   sealed::Channel chan(sp.fd);
+   sealed::RemoteFactory rf(&chan);
+   rf.ServeServices();
+@@ -481,7 +437,7 @@
+     c.Check(false, std::string("reuse run: ") + e.what());
+     return false;
+   }
+-  std::string body = ReadFile(staging + "/reuse.result");
++  std::string body = ReadFile(staging + "/work/reuse.result");
+   bool s1 = Contains(body, "seal1=OK");
+   bool s2 = Contains(body, "seal2=OK");
+   bool open_fail = Contains(body, "open_reused=AUTHENTICATION_FAILED");
+@@ -523,7 +479,7 @@
+     c.Check(false, "xtenant victim id");
+     return false;
+   }
+-  std::string result = staging + "/xtenant.result";
++  std::string result = staging + "/work/xtenant.result";
+   RunCmd("rm -f " + ShellQuote(result));
+   sealed::Spawned sp = sealed::SpawnSandboxed(
+       bin.c_str(), staging, {staging, "77522", victim, result});
+@@ -684,7 +640,7 @@
+       return 2;
+     }
+   }
+-  std::string workdir = "/tmp/efs-sealed-" + factory_name;
++  std::string workdir = "/tmp/efs-sealed-" + factory_name + "-" + std::to_string(getpid());
+   RunCmd("rm -rf " + ShellQuote(workdir));
+   RunCmd("mkdir -p " + ShellQuote(workdir));
+   int rc = 0;
+--- a/packaging/source_manifest.json
++++ b/packaging/source_manifest.json
+@@ -1,314 +1,290 @@
+ {
+- "version": 2,
+- "files": [
+-  {
+-   "path": "CMakeLists.txt",
+-   "sha256": "f9eddd5bc0797b38a2002751184612c2a7111340c8ccdc99543c10dce5047daf"
+-  },
+-  {
+-   "path": "README.md",
+-   "sha256": "cacf57e1aa51cf58d0906351931117c167f0c399880a8cc800b29e501a2bf91c"
+-  },
+-  {
+-   "path": "candidate/README.md",
+-   "sha256": "d229b44f39b88c215bc6fd15aedb6640805582156b819c56fc5fdffc52c25891"
+-  },
+-  {
+-   "path": "candidate/src/efs_impl.cpp",
+-   "sha256": "503c8c8a7024cdc3e093f6cdb0bdf97067b28b1a107e96b9c2b113451f7e8680"
+-  },
+-  {
+-   "path": "candidate/src/efs_impl.h",
+-   "sha256": "9565c3dea20ce7684858f2ba524517becdd60873c9d782bb517d177238da304e"
+-  },
+-  {
+-   "path": "docs/contract.md",
+-   "sha256": "eb8341ec7fe0d48ecd9c0cff0f16db9b471b5b9355ccf03a7faac9f15e6dde43"
+-  },
+-  {
+-   "path": "docs/format.md",
+-   "sha256": "306124ce7f7c524e55e27afa319d57269c3a75cd62b256ae1d951e7e5f4a70f7"
+-  },
+-  {
+-   "path": "docs/threat-model.md",
+-   "sha256": "ffaecd29c63d456b71306e577dd75217c72dfa9e8063bd503c6d0ab9bc6d091b"
+-  },
+-  {
+-   "path": "grader/fmt.h",
+-   "sha256": "197fc0ee47ce7bf70d6e83d2d6310482c8f47ec4530184b105eaab234378bb99"
+-  },
+-  {
+-   "path": "grader/format_parser.cpp",
+-   "sha256": "f79d4ab55e2dbca1b8ef205eb5e06c5b79a01f7e65e1bd9435be2d7157c881c1"
+-  },
+-  {
+-   "path": "grader/grader.h",
+-   "sha256": "a18984d52c3c901187a267cd0033e69226a195e41acc1d9d1192a2ccbd2a5b66"
+-  },
+-  {
+-   "path": "grader/json.cpp",
+-   "sha256": "63694c10e41eed1557f7a709fb7455b2efc68fa9e3e9b12e048980861ea20759"
+-  },
+-  {
+-   "path": "grader/main.cpp",
+-   "sha256": "98bfec66a0ff453321be38fff7aec2a6562528a7e8eb8a2ae0b05fbf3208185b"
+-  },
+-  {
+-   "path": "grader/oracle.cpp",
+-   "sha256": "47404d806ea8e83899264fd1b9d951e4fb67cec2898a5ea645f0c21d79c1383c"
+-  },
+-  {
+-   "path": "grader/oracle.h",
+-   "sha256": "8d85f29b63173f93b20b6ee0f779b5d1c627860118e02cfcaf90057b20db7c9a"
+-  },
+-  {
+-   "path": "grader/profile.cpp",
+-   "sha256": "92282f17a15614bdf053beb3b8bf9bdcc46c2ae046f8b5849042608909951f99"
+-  },
+-  {
+-   "path": "grader/runner.cpp",
+-   "sha256": "18e72037024de894364df89236d57433326c5859c6ef6fd32f52a801a2602cb0"
+-  },
+-  {
+-   "path": "grader/runner.h",
+-   "sha256": "b86d03c5c9193116c1e4c77e3b28437bf5d99365238201904480fc67b64fe76a"
+-  },
+-  {
+-   "path": "grader/sealed_run.cpp",
+-   "sha256": "8ab684c4206db8040c15b4016f4afcff8dd8ddb4df48189d882613d017e941e9"
+-  },
+-  {
+-   "path": "grader/sealed_run.h",
+-   "sha256": "4032dab5429acffe33bfbd790b290324b6553442d6907a7590ad808797c90d76"
+-  },
+-  {
+-   "path": "grader/suites.cpp",
+-   "sha256": "191b79603d068a4955d8501cac1fad23a501b49223ea0bbbeada1adabb726c7c"
+-  },
+-  {
+-   "path": "grader/suites.h",
+-   "sha256": "5b987c31012cfdc1bb5de3a0d140f1020ea9d71c592bd47e584891dd632b0ec6"
+-  },
+-  {
+-   "path": "grader/suites2.cpp",
+-   "sha256": "323019b3a019d297d608a1b640d454751a961c5e5360149f35a46e0725118c9e"
+-  },
+-  {
+-   "path": "grader/suites3.cpp",
+-   "sha256": "7821dc254d1aa9a64e53ae0f6a207095d57ef349dae71c2c72ba164aa0de7a2c"
+-  },
+-  {
+-   "path": "grader/suites_oracle.cpp",
+-   "sha256": "f775c6e5d6d0b1ea6386ff2fb4234b602a7139341648aa00adf5fb2f6d899833"
+-  },
+-  {
+-   "path": "include/efs/driver.h",
+-   "sha256": "808ae6322a4651880cfe9e23348a8699bc640b0c52d3cc944d906af61e130700"
+-  },
+-  {
+-   "path": "include/efs/errors.h",
+-   "sha256": "5088c66682d0b2372a8d7174dfe96e3eb89119aa25d40c1b5a2d5302d5432084"
+-  },
+-  {
+-   "path": "include/efs/faults.h",
+-   "sha256": "6f0f70d4a51cad51b6a7d6f3fe71ba9faa28afab284e0ab5bd81bee093f8907a"
+-  },
+-  {
+-   "path": "include/efs/hash.h",
+-   "sha256": "ab9002a4e7922a24c1752d8e192c75505a8e4ba14492e6dc3438915f91977341"
+-  },
+-  {
+-   "path": "include/efs/services.h",
+-   "sha256": "5ff8dd5dcbe434e710f15b4364b596f3f8a22f770fde2d6313d8cd2048b91463"
+-  },
+-  {
+-   "path": "include/efs/types.h",
+-   "sha256": "c755d4ce19e3253c8e82fa1ad9e9b76497d2886c8c96cbf9378ea814d466a43b"
+-  },
+-  {
+-   "path": "packaging/README.md",
+-   "sha256": "c376ee50143782a687da8eee09b049561d59755160cd82370c9f996c3e63e484"
+-  },
+-  {
+-   "path": "packaging/build_recipe.sh",
+-   "sha256": "eb8df4c7139dadff532487647a66629eeeb4cd229716b740a37ac1479b06668a"
+-  },
+-  {
+-   "path": "packaging/toolchain.pins",
+-   "sha256": "26cf4cb04f54c9ddaa4d068e047caffafebc4b420f74cd3ef58019e4156ddcb1"
+-  },
+-  {
+-   "path": "packaging/valgrind.supp",
+-   "sha256": "2aa0225e6b50a0e9ded0c22785dc581bcffb1e8f499bdece5cc9379dfaeacbc6"
+-  },
+-  {
+-   "path": "profiles/H0.json",
+-   "sha256": "c887f9e2b55091ed18812efb763dab4bbcd9dc17740d8077b33219af4fbbacf1"
+-  },
+-  {
+-   "path": "profiles/H1.json",
+-   "sha256": "d7dc5b4f307c990a5577e050f884e529a3e4fd0945e566902fb2d18ab2bd4332"
+-  },
+-  {
+-   "path": "profiles/H2.json",
+-   "sha256": "f9da1f3481c5a676fa57ff9199b75fe1b8b7bed8debcfe9ebbbf2e77b6cae6e8"
+-  },
+-  {
+-   "path": "profiles/H3.json",
+-   "sha256": "5b5317c8e3797bf0113ce9522426a19f906b92c615b636c8473ed7cc20ca6c4b"
+-  },
+-  {
+-   "path": "profiles/H4.json",
+-   "sha256": "e83149367e625a6817f000b1656cec81db5b4a823d8b6889f55d0045d7a614e7"
+-  },
+-  {
+-   "path": "profiles/H5.json",
+-   "sha256": "b8d26b5082e91177b48705ae971af91fbcd85daa7c1ff44da8e531007652e6f8"
+-  },
+-  {
+-   "path": "profiles/budgets.json",
+-   "sha256": "4dfbb0e4c5a60ba8ca4fcd0e6fc62d729aa65aca2d4801ab97a8cff557b706e5"
+-  },
+-  {
+-   "path": "public-tests/pub.h",
+-   "sha256": "cbf2a48cb23c0c52ab5f596367abd215cd59a01bcd4d849587981f655e0d8559"
+-  },
+-  {
+-   "path": "public-tests/repro.cpp",
+-   "sha256": "b131b585649dd1788ca4f872aef9959043c77349ad63382a8d1b577c2a3e0022"
+-  },
+-  {
+-   "path": "public-tests/runner.cpp",
+-   "sha256": "d177a30a76b5ccdd9a289523575c04b5009922eac3024aafce317d744cbb6785"
+-  },
+-  {
+-   "path": "public-tests/smoke.cpp",
+-   "sha256": "61d17af11a777bd250a4e64bac74e45999a52c6c535c19566dd9b0de7e2b1579"
+-  },
+-  {
+-   "path": "reference/efs_impl.cpp",
+-   "sha256": "61a00d322611421d6e675bfdbd6a34032bbc3930648f7ad6368c261653bf07b6"
+-  },
+-  {
+-   "path": "reference/efs_impl.h",
+-   "sha256": "3b8667797f43f5a67dce48ca8ec748b99c9e125316f01051ac671b93770b6710"
+-  },
+-  {
+-   "path": "reports/authoring_report.md",
+-   "sha256": "e5c27125ba29c62028ccc2387dcddf9f4078f9435564af49f0a606ff8b0d2efe"
+-  },
+-  {
+-   "path": "sealed/adv_reuse.cpp",
+-   "sha256": "94aea1dfc94976f6e900bc31840ceffd1c05eea75cb2d644ced38265dbd80a7a"
+-  },
+-  {
+-   "path": "sealed/adv_snoop.cpp",
+-   "sha256": "c4d67e5fa7c7688f17ab79389ec052f2e3b440ae4516bf48db59a61d43292244"
+-  },
+-  {
+-   "path": "sealed/adv_xtenant.cpp",
+-   "sha256": "a41006e6bd7e5fec4220f5a11588ea98bc85bf7077fc235697acbc90e0821d58"
+-  },
+-  {
+-   "path": "sealed/candidate_main.cpp",
+-   "sha256": "cacf6f3031049dcee2adaf7dcee90e871624771e8bf7dd5e0893771d5453dc50"
+-  },
+-  {
+-   "path": "sealed/driver_stub.cpp",
+-   "sha256": "3cbc1cee8a9e880478090fdaaa7e7c2ba22695b626e4e4cdb002e142bc77a59d"
+-  },
+-  {
+-   "path": "sealed/driver_stub.h",
+-   "sha256": "801194226fff7330c5eeadaec0817b129f5ef286f3edd5634751e11ec7a0a13f"
+-  },
+-  {
+-   "path": "sealed/rpc.cpp",
+-   "sha256": "bd0a03a948ace9cdda3e9a49072ce381b9b60bb831899fdda9f555175e8afa69"
+-  },
+-  {
+-   "path": "sealed/rpc.h",
+-   "sha256": "ec48463afc5690153e49d6bf17dffdc3098718d85998499f388308a4891a8b2d"
+-  },
+-  {
+-   "path": "sealed/sandbox.cpp",
+-   "sha256": "490125de84ff3b394ad0b4ef424943c72653026505f8b561c918c6c9df587132"
+-  },
+-  {
+-   "path": "sealed/sandbox.h",
+-   "sha256": "f76313b316a27e7750fc85afdf94520b3d5c7f3533d3dca120bc32517a2a349a"
+-  },
+-  {
+-   "path": "sealed/sandbox_helper.cpp",
+-   "sha256": "8d0e4c592027eae567c04ed6f3d6722af38a2fd7b97940faff105e92a297b032"
+-  },
+-  {
+-   "path": "sealed/service_proxy.cpp",
+-   "sha256": "b186304138c1e22318371666709384a7e7cb0a4a32d2b08e15c6816af027fc6e"
+-  },
+-  {
+-   "path": "sealed/service_proxy.h",
+-   "sha256": "ca4399a52eb15a4a8d19c029afa8640fb109d7198f631a2c8644374f9b6e1fcc"
+-  },
+-  {
+-   "path": "sealed/sha256.cpp",
+-   "sha256": "ab3c6fd8c7a5c2c2d5483e5dc08f6bcc98ae699dd8d51756a705d524c9eac9f0"
+-  },
+-  {
+-   "path": "sealed/sha256.h",
+-   "sha256": "72477a7b318a8902cc8d91d6e228cfaa15f80338d5d035291c83a7341a344692"
+-  },
+-  {
+-   "path": "sealed/sha256_efs.cpp",
+-   "sha256": "7557dc0da43f6ea6500a6c3b26bc278267bef4604b951929e0922440f0a05dcc"
+-  },
+-  {
+-   "path": "trusted/admin.h",
+-   "sha256": "e55b2f58d0cc0f0e5d44dee166bf406ddebb7956ed7b3850748bb2ed672abbf8"
+-  },
+-  {
+-   "path": "trusted/allocator.cpp",
+-   "sha256": "d9cd393629aad8b5d611a48bd6159c7e1626c7a3eb57eeb58c9480c18fd28b13"
+-  },
+-  {
+-   "path": "trusted/anchor.cpp",
+-   "sha256": "230d7871e96d4ee241dd5158be6e02277b8350d1fb97b3d64f2bf9e0278500f8"
+-  },
+-  {
+-   "path": "trusted/crypto_broker.cpp",
+-   "sha256": "41c56a33c9192e07e5496945109eabb9203d41957731b16cb44517ee6f360dbe"
+-  },
+-  {
+-   "path": "trusted/impl.h",
+-   "sha256": "1ed7aab95eb38bf7c28b27280f1ff30412741f1eb8781364cee45e9c42383ec7"
+-  },
+-  {
+-   "path": "trusted/storage.cpp",
+-   "sha256": "13a54296a61a8ecf809e462b2a01bb6c5a57428626b3cadb0280f9067e931579"
+-  },
+-  {
+-   "path": "trusted/world.cpp",
+-   "sha256": "c058fd4440af046b81d82aa34012757cfc404e0eeb4c455bc456958aabe19cf8"
+-  },
+-  {
+-   "path": "trusted/world.h",
+-   "sha256": "ad411ea2102a9e00e565a83061cb23c56665fa8b85ae1386b3edabc24da21c98"
+-  },
+-  {
+-   "path": "packaging/calibration/CALIBRATION_RUNBOOK.md",
+-   "sha256": "58de5bf4ad795d224dbc85caae17a696aa7b68ec13db5434e233733371433af4"
+-  },
+-  {
+-   "path": "packaging/calibration/world.redacted.h",
+-   "sha256": "e69c193c91f5e7f11a482f2da10688ec524de8ef056c6205ceee818105ac2bd2"
+-  },
+-  {
+-   "path": "packaging/calibration/CMakeLists.candidate-view.txt",
+-   "sha256": "38ef7d5de68e5feeeebf5dfba33d4e248992b1bf96a9ff62835cfb63436180f3"
+-  },
+-  {
+-   "path": "packaging/calibration/port_ref.py",
+-   "sha256": "124e78e9f233a18c5ac537fc10a1ada5d392941217186c1535002a3dfb689796"
+-  }
+- ],
+- "note": "manifest excludes itself; verify with: python3 -c \"import hashlib,json; m=json.load(open(\"packaging/source_manifest.json\")); print(all(hashlib.sha256(open(e[\"path\"],\"rb\").read()).hexdigest()==e[\"sha256\"] for e in m[\"files\"]))\""
++  "version": 2,
++  "files": [
++    {
++      "path": "CMakeLists.txt",
++      "sha256": "f9eddd5bc0797b38a2002751184612c2a7111340c8ccdc99543c10dce5047daf"
++    },
++    {
++      "path": "candidate/README.md",
++      "sha256": "d229b44f39b88c215bc6fd15aedb6640805582156b819c56fc5fdffc52c25891"
++    },
++    {
++      "path": "candidate/src/efs_impl.cpp",
++      "sha256": "503c8c8a7024cdc3e093f6cdb0bdf97067b28b1a107e96b9c2b113451f7e8680"
++    },
++    {
++      "path": "candidate/src/efs_impl.h",
++      "sha256": "9565c3dea20ce7684858f2ba524517becdd60873c9d782bb517d177238da304e"
++    },
++    {
++      "path": "docs/contract.md",
++      "sha256": "eb8341ec7fe0d48ecd9c0cff0f16db9b471b5b9355ccf03a7faac9f15e6dde43"
++    },
++    {
++      "path": "docs/format.md",
++      "sha256": "306124ce7f7c524e55e27afa319d57269c3a75cd62b256ae1d951e7e5f4a70f7"
++    },
++    {
++      "path": "docs/threat-model.md",
++      "sha256": "ffaecd29c63d456b71306e577dd75217c72dfa9e8063bd503c6d0ab9bc6d091b"
++    },
++    {
++      "path": "grader/fmt.h",
++      "sha256": "197fc0ee47ce7bf70d6e83d2d6310482c8f47ec4530184b105eaab234378bb99"
++    },
++    {
++      "path": "grader/format_parser.cpp",
++      "sha256": "f79d4ab55e2dbca1b8ef205eb5e06c5b79a01f7e65e1bd9435be2d7157c881c1"
++    },
++    {
++      "path": "grader/grader.h",
++      "sha256": "a18984d52c3c901187a267cd0033e69226a195e41acc1d9d1192a2ccbd2a5b66"
++    },
++    {
++      "path": "grader/json.cpp",
++      "sha256": "63694c10e41eed1557f7a709fb7455b2efc68fa9e3e9b12e048980861ea20759"
++    },
++    {
++      "path": "grader/main.cpp",
++      "sha256": "98bfec66a0ff453321be38fff7aec2a6562528a7e8eb8a2ae0b05fbf3208185b"
++    },
++    {
++      "path": "grader/oracle.cpp",
++      "sha256": "47404d806ea8e83899264fd1b9d951e4fb67cec2898a5ea645f0c21d79c1383c"
++    },
++    {
++      "path": "grader/oracle.h",
++      "sha256": "8d85f29b63173f93b20b6ee0f779b5d1c627860118e02cfcaf90057b20db7c9a"
++    },
++    {
++      "path": "grader/profile.cpp",
++      "sha256": "92282f17a15614bdf053beb3b8bf9bdcc46c2ae046f8b5849042608909951f99"
++    },
++    {
++      "path": "grader/runner.cpp",
++      "sha256": "18e72037024de894364df89236d57433326c5859c6ef6fd32f52a801a2602cb0"
++    },
++    {
++      "path": "grader/runner.h",
++      "sha256": "b86d03c5c9193116c1e4c77e3b28437bf5d99365238201904480fc67b64fe76a"
++    },
++    {
++      "path": "grader/sealed_run.cpp",
++      "sha256": "2022c4d5e654b97388278f2de59a3b49eb38c5ab06c01f2eb8c6cfc9aff8b2f8"
++    },
++    {
++      "path": "grader/sealed_run.h",
++      "sha256": "4032dab5429acffe33bfbd790b290324b6553442d6907a7590ad808797c90d76"
++    },
++    {
++      "path": "grader/suites.cpp",
++      "sha256": "191b79603d068a4955d8501cac1fad23a501b49223ea0bbbeada1adabb726c7c"
++    },
++    {
++      "path": "grader/suites.h",
++      "sha256": "5b987c31012cfdc1bb5de3a0d140f1020ea9d71c592bd47e584891dd632b0ec6"
++    },
++    {
++      "path": "grader/suites2.cpp",
++      "sha256": "323019b3a019d297d608a1b640d454751a961c5e5360149f35a46e0725118c9e"
++    },
++    {
++      "path": "grader/suites3.cpp",
++      "sha256": "7821dc254d1aa9a64e53ae0f6a207095d57ef349dae71c2c72ba164aa0de7a2c"
++    },
++    {
++      "path": "grader/suites_oracle.cpp",
++      "sha256": "f775c6e5d6d0b1ea6386ff2fb4234b602a7139341648aa00adf5fb2f6d899833"
++    },
++    {
++      "path": "include/efs/driver.h",
++      "sha256": "808ae6322a4651880cfe9e23348a8699bc640b0c52d3cc944d906af61e130700"
++    },
++    {
++      "path": "include/efs/errors.h",
++      "sha256": "5088c66682d0b2372a8d7174dfe96e3eb89119aa25d40c1b5a2d5302d5432084"
++    },
++    {
++      "path": "include/efs/faults.h",
++      "sha256": "6f0f70d4a51cad51b6a7d6f3fe71ba9faa28afab284e0ab5bd81bee093f8907a"
++    },
++    {
++      "path": "include/efs/hash.h",
++      "sha256": "ab9002a4e7922a24c1752d8e192c75505a8e4ba14492e6dc3438915f91977341"
++    },
++    {
++      "path": "include/efs/services.h",
++      "sha256": "5ff8dd5dcbe434e710f15b4364b596f3f8a22f770fde2d6313d8cd2048b91463"
++    },
++    {
++      "path": "include/efs/types.h",
++      "sha256": "c755d4ce19e3253c8e82fa1ad9e9b76497d2886c8c96cbf9378ea814d466a43b"
++    },
++    {
++      "path": "packaging/README.md",
++      "sha256": "c376ee50143782a687da8eee09b049561d59755160cd82370c9f996c3e63e484"
++    },
++    {
++      "path": "packaging/build_recipe.sh",
++      "sha256": "eb8df4c7139dadff532487647a66629eeeb4cd229716b740a37ac1479b06668a"
++    },
++    {
++      "path": "packaging/toolchain.pins",
++      "sha256": "26cf4cb04f54c9ddaa4d068e047caffafebc4b420f74cd3ef58019e4156ddcb1"
++    },
++    {
++      "path": "packaging/valgrind.supp",
++      "sha256": "2aa0225e6b50a0e9ded0c22785dc581bcffb1e8f499bdece5cc9379dfaeacbc6"
++    },
++    {
++      "path": "profiles/H0.json",
++      "sha256": "c887f9e2b55091ed18812efb763dab4bbcd9dc17740d8077b33219af4fbbacf1"
++    },
++    {
++      "path": "profiles/H1.json",
++      "sha256": "d7dc5b4f307c990a5577e050f884e529a3e4fd0945e566902fb2d18ab2bd4332"
++    },
++    {
++      "path": "profiles/H2.json",
++      "sha256": "f9da1f3481c5a676fa57ff9199b75fe1b8b7bed8debcfe9ebbbf2e77b6cae6e8"
++    },
++    {
++      "path": "profiles/H3.json",
++      "sha256": "5b5317c8e3797bf0113ce9522426a19f906b92c615b636c8473ed7cc20ca6c4b"
++    },
++    {
++      "path": "profiles/H4.json",
++      "sha256": "e83149367e625a6817f000b1656cec81db5b4a823d8b6889f55d0045d7a614e7"
++    },
++    {
++      "path": "profiles/H5.json",
++      "sha256": "b8d26b5082e91177b48705ae971af91fbcd85daa7c1ff44da8e531007652e6f8"
++    },
++    {
++      "path": "profiles/budgets.json",
++      "sha256": "4dfbb0e4c5a60ba8ca4fcd0e6fc62d729aa65aca2d4801ab97a8cff557b706e5"
++    },
++    {
++      "path": "public-tests/pub.h",
++      "sha256": "cbf2a48cb23c0c52ab5f596367abd215cd59a01bcd4d849587981f655e0d8559"
++    },
++    {
++      "path": "public-tests/repro.cpp",
++      "sha256": "b131b585649dd1788ca4f872aef9959043c77349ad63382a8d1b577c2a3e0022"
++    },
++    {
++      "path": "public-tests/runner.cpp",
++      "sha256": "d177a30a76b5ccdd9a289523575c04b5009922eac3024aafce317d744cbb6785"
++    },
++    {
++      "path": "public-tests/smoke.cpp",
++      "sha256": "61d17af11a777bd250a4e64bac74e45999a52c6c535c19566dd9b0de7e2b1579"
++    },
++    {
++      "path": "reference/efs_impl.cpp",
++      "sha256": "61a00d322611421d6e675bfdbd6a34032bbc3930648f7ad6368c261653bf07b6"
++    },
++    {
++      "path": "reference/efs_impl.h",
++      "sha256": "3b8667797f43f5a67dce48ca8ec748b99c9e125316f01051ac671b93770b6710"
++    },
++    {
++      "path": "sealed/adv_reuse.cpp",
++      "sha256": "94aea1dfc94976f6e900bc31840ceffd1c05eea75cb2d644ced38265dbd80a7a"
++    },
++    {
++      "path": "sealed/adv_snoop.cpp",
++      "sha256": "23327c14e5bfb0980b13df1a0d0f537e9b6c9ee096d214f35a0738c7aae6042c"
++    },
++    {
++      "path": "sealed/adv_xtenant.cpp",
++      "sha256": "a41006e6bd7e5fec4220f5a11588ea98bc85bf7077fc235697acbc90e0821d58"
++    },
++    {
++      "path": "sealed/candidate_main.cpp",
++      "sha256": "cacf6f3031049dcee2adaf7dcee90e871624771e8bf7dd5e0893771d5453dc50"
++    },
++    {
++      "path": "sealed/driver_stub.cpp",
++      "sha256": "3cbc1cee8a9e880478090fdaaa7e7c2ba22695b626e4e4cdb002e142bc77a59d"
++    },
++    {
++      "path": "sealed/driver_stub.h",
++      "sha256": "801194226fff7330c5eeadaec0817b129f5ef286f3edd5634751e11ec7a0a13f"
++    },
++    {
++      "path": "sealed/rpc.cpp",
++      "sha256": "28bd279e33608aad081b0fb45152999b10e8b7868efac8c9af3b82007f19713f"
++    },
++    {
++      "path": "sealed/rpc.h",
++      "sha256": "ec48463afc5690153e49d6bf17dffdc3098718d85998499f388308a4891a8b2d"
++    },
++    {
++      "path": "sealed/sandbox.cpp",
++      "sha256": "c4061460e7f34c6ba03e1abbaf26314d7734426a426e140b60ca53e00589ff4e"
++    },
++    {
++      "path": "sealed/sandbox.h",
++      "sha256": "433c1e6cfdca7206d6f95481f1d4753303489b291dd1569c45d8f5ffef2834a7"
++    },
++    {
++      "path": "sealed/sandbox_helper.cpp",
++      "sha256": "051ed5b067c87de19ddbb619928d096a5b427301441f488f700851b3bf3fc738"
++    },
++    {
++      "path": "sealed/service_proxy.cpp",
++      "sha256": "b186304138c1e22318371666709384a7e7cb0a4a32d2b08e15c6816af027fc6e"
++    },
++    {
++      "path": "sealed/service_proxy.h",
++      "sha256": "ca4399a52eb15a4a8d19c029afa8640fb109d7198f631a2c8644374f9b6e1fcc"
++    },
++    {
++      "path": "sealed/sha256.cpp",
++      "sha256": "ab3c6fd8c7a5c2c2d5483e5dc08f6bcc98ae699dd8d51756a705d524c9eac9f0"
++    },
++    {
++      "path": "sealed/sha256.h",
++      "sha256": "72477a7b318a8902cc8d91d6e228cfaa15f80338d5d035291c83a7341a344692"
++    },
++    {
++      "path": "sealed/sha256_efs.cpp",
++      "sha256": "7557dc0da43f6ea6500a6c3b26bc278267bef4604b951929e0922440f0a05dcc"
++    },
++    {
++      "path": "trusted/admin.h",
++      "sha256": "e55b2f58d0cc0f0e5d44dee166bf406ddebb7956ed7b3850748bb2ed672abbf8"
++    },
++    {
++      "path": "trusted/allocator.cpp",
++      "sha256": "d9cd393629aad8b5d611a48bd6159c7e1626c7a3eb57eeb58c9480c18fd28b13"
++    },
++    {
++      "path": "trusted/anchor.cpp",
++      "sha256": "230d7871e96d4ee241dd5158be6e02277b8350d1fb97b3d64f2bf9e0278500f8"
++    },
++    {
++      "path": "trusted/crypto_broker.cpp",
++      "sha256": "41c56a33c9192e07e5496945109eabb9203d41957731b16cb44517ee6f360dbe"
++    },
++    {
++      "path": "trusted/impl.h",
++      "sha256": "1ed7aab95eb38bf7c28b27280f1ff30412741f1eb8781364cee45e9c42383ec7"
++    },
++    {
++      "path": "trusted/storage.cpp",
++      "sha256": "13a54296a61a8ecf809e462b2a01bb6c5a57428626b3cadb0280f9067e931579"
++    },
++    {
++      "path": "trusted/world.cpp",
++      "sha256": "c058fd4440af046b81d82aa34012757cfc404e0eeb4c455bc456958aabe19cf8"
++    },
++    {
++      "path": "trusted/world.h",
++      "sha256": "ad411ea2102a9e00e565a83061cb23c56665fa8b85ae1386b3edabc24da21c98"
++    }
++  ],
++  "note": "manifest excludes itself; verify with: python3 -c \"import hashlib,json; m=json.load(open(\"packaging/source_manifest.json\")); print(all(hashlib.sha256(open(e[\"path\"],\"rb\").read()).hexdigest()==e[\"sha256\"] for e in m[\"files\"]))\""
+ }
+--- a/sealed/adv_snoop.cpp
++++ b/sealed/adv_snoop.cpp
+@@ -6,6 +6,7 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <sys/socket.h>
++#include <sys/wait.h>
+ #include <unistd.h>
+ 
+ #include <cstdio>
+@@ -40,30 +41,34 @@
+   // ignores it and probes from the inherited cwd).
+   // argv[2] = result path. argv[3] = repo root for absolute probes.
+   bool baseline = argc > 4 && std::string(argv[4]) == "--baseline";
+-  if (!baseline && argc > 1 && chdir(argv[1]) != 0) return 3;
++  if (!baseline && argc > 1 && chdir("/") != 0) return 3;
+   const char* out = argc > 2 ? argv[2] : "snoop.result";
+   std::string repo = argc > 3 ? argv[3] : ".";
+   g_out = fopen(out, "w");
+   if (!g_out) return 2;
+ 
+   // Staging-relative view (positive control first: this one must open
+-  // in both modes, proving the probes can succeed).
++  // in both modes, proving the probes can succeed). Mirrors the
++  // verifier's denied-REL list in AdvSnoop (wrapper vendor tree: no
++  // reports/evidence vendored; allocator/world.cpp replace them).
+   Probe("REL", "sealed/rpc.h");
+   for (auto& p : {"reference/efs_impl.h", "reference/efs_impl.cpp",
+                   "trusted/admin.h", "trusted/world.h", "trusted/impl.h",
++                  "trusted/allocator.cpp", "trusted/world.cpp",
+                   "grader/sealed_run.cpp", "grader/suites.h",
+-                  "reports/evidence_H0_reference.json", "../reference",
+-                  "../trusted", "../grader"})
++                  "profiles/H0.json", "profiles/budgets.json",
++                  "../reference", "../trusted", "../grader"})
+     Probe("REL", p);
+ 
+-  // Absolute paths: the same-user read boundary under test.
++  // Absolute paths: the same-user read boundary under test. Mirrors
++  // the verifier's kAbs list in AdvSnoop (wrapper vendor tree: no
++  // reports/evidence vendored; allocator/world.cpp replace them).
+   for (auto& p :
+        {"reference/efs_impl.h", "reference/efs_impl.cpp",
+         "trusted/admin.h", "trusted/world.h", "trusted/impl.h",
+         "trusted/crypto_broker.cpp", "grader/sealed_run.cpp",
+         "grader/suites.h", "grader/suites_oracle.cpp",
+-        "reports/evidence_H0_reference.json",
+-        "reports/evidence_H0_candidate.json", "profiles/H0.json",
++        "trusted/allocator.cpp", "trusted/world.cpp", "profiles/H0.json",
+         "profiles/budgets.json", "packaging/source_manifest.json",
+         "candidate/src/efs_impl.cpp"})
+     Probe("ABS", repo + "/" + p);
+@@ -92,7 +97,7 @@
+   std::string extra;
+   int n_extra = 0;
+   int out_fd = fileno(g_out);
+-  for (int fd = 4; fd < 1024; ++fd) {
++  for (int fd = 4; fd < 65536; ++fd) {
+     if (fd == 3 || fd == out_fd) continue;
+     if (fcntl(fd, F_GETFD) != -1) {
+       if (n_extra) extra += ",";
+@@ -143,6 +148,24 @@
+     }
+     std::fprintf(g_out, "net_tcp_lines=%d\n", lines);
+   }
++  // Active negative probes. Only this trusted double may report their
++  // results; candidate output is never used to decide a grading pass.
++  if (!baseline) {
++  int reward = open("/logs/verifier/reward.json", O_CREAT | O_WRONLY, 0600);
++  std::fprintf(g_out, "write_reward=%s\n", reward < 0 ? "denied" : "BREACH");
++  if (reward >= 0) close(reward);
++  int tests = open("/tests/test.sh", O_RDONLY);
++  std::fprintf(g_out, "read_tests=%s\n", tests < 0 ? "denied" : "BREACH");
++  if (tests >= 0) close(tests);
++    pid_t child = fork();
++    if (child == 0) _exit(77);
++    std::fprintf(g_out, "fork=%s\n", child < 0 ? "denied" : "BREACH");
++    if (child > 0) waitpid(child, nullptr, 0);
++    std::fprintf(g_out, "setsid=%s\n", setsid() < 0 ? "denied" : "BREACH");
++    int sock = socket(AF_INET, SOCK_STREAM, 0);
++    std::fprintf(g_out, "socket=%s\n", sock < 0 ? "denied" : "BREACH");
++    if (sock >= 0) close(sock);
++  }
+   std::fprintf(g_out, "opened_total=%d\n", g_opened);
+   fclose(g_out);
+   return 0;
+--- a/sealed/rpc.cpp
++++ b/sealed/rpc.cpp
+@@ -15,6 +15,8 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <thread>
++#include <algorithm>
+ 
+ namespace sealed {
+ namespace {
+@@ -37,6 +39,27 @@
+     return n;
+   }
+   return fd;
++}
++
++// Drain child output through a bounded parent-owned pipe for its full
++// lifetime. It is untrusted diagnostic text, never grading evidence. Keeping
++// the reader alive avoids EPIPE for legitimate runtime diagnostics.
++void DrainChildOutput(int fd) {
++  std::thread([fd] {
++    size_t left = 65536;
++    char buf[4096];
++    while (true) {
++      ssize_t n = read(fd, buf, sizeof buf);
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) break;
++      const size_t keep = std::min(left, static_cast<size_t>(n));
++      if (keep) {
++        std::fwrite(buf, 1, keep, stderr);
++        left -= keep;
++      }
++    }
++    close(fd);
++  }).detach();
+ }
+ 
+ struct P {
+@@ -531,11 +554,50 @@
+     throw RemoteError("socketpair failed");
+   sv[0] = MoveHigh(sv[0]);
+   sv[1] = MoveHigh(sv[1]);
++  // Candidate/adversarial stdio discipline: the child NEVER inherits
++  // the parent's stdout/stderr. It receives a parent-owned bounded
++  // pipe (drained by the parent, never by the grade) or /dev/null --
++  // never a verifier-log stream. Inherited descriptors bypass Unix
++  // path permissions, so an inherited log/reward file would be
++  // writable by untrusted code regardless of its mode bits. The file
++  // actions below take effect in the child before any initializer
++  // runs, covering statically-linked output as well.
++  //
++  // Designated capture, deadlock-free: child stdout+stderr BOTH go to
++  // the same pipe (no separate stderr pipe to fill while the parent
++  // drains stdout), the parent drains it to /dev/null with a bounded
++  // total (kChildOutCap) using nonblocking reads alongside the channel
++  // pump, and the pipe is sized up (64 KiB) so chatty-but-legitimate
++  // children never block. Anything beyond the cap is discarded, never
++  // parsed: child stdio is evidence of nothing.
++  int out[2];
++  if (pipe(out) != 0) {
++    close(sv[0]);
++    close(sv[1]);
++    throw RemoteError("stdio pipe failed");
++  }
++  int out_rd = MoveHigh(out[0]);
++  int out_wr = MoveHigh(out[1]);
++  int devnull = open("/dev/null", O_RDONLY);
++  if (devnull < 0) {
++    close(sv[0]);
++    close(sv[1]);
++    close(out_rd);
++    close(out_wr);
++    throw RemoteError("open /dev/null failed");
++  }
++  devnull = MoveHigh(devnull);
+   posix_spawn_file_actions_t fa;
+   posix_spawn_file_actions_init(&fa);
+   posix_spawn_file_actions_adddup2(&fa, sv[1], 3);
+   posix_spawn_file_actions_addclose(&fa, sv[0]);
+   posix_spawn_file_actions_addclose(&fa, sv[1]);
++  posix_spawn_file_actions_adddup2(&fa, devnull, 0);
++  posix_spawn_file_actions_addclose(&fa, devnull);
++  posix_spawn_file_actions_adddup2(&fa, out_wr, 1);
++  posix_spawn_file_actions_adddup2(&fa, out_wr, 2);
++  posix_spawn_file_actions_addclose(&fa, out_wr);
++  posix_spawn_file_actions_addclose(&fa, out_rd);
+   std::vector<char*> argv;
+   argv.push_back(const_cast<char*>(path));
+   for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+@@ -544,10 +606,14 @@
+   int r = posix_spawn(&pid, path, &fa, nullptr, argv.data(), ::environ);
+   posix_spawn_file_actions_destroy(&fa);
+   close(sv[1]);
++  close(out_wr);
++  close(devnull);
+   if (r != 0) {
+     close(sv[0]);
++    close(out_rd);
+     throw RemoteError("spawn failed");
+   }
++  DrainChildOutput(out_rd);
+   return Spawned{pid, sv[0]};
+ }
+ 
+--- a/sealed/sandbox.cpp
++++ b/sealed/sandbox.cpp
+@@ -1,68 +1,76 @@
+-// Sandboxed spawn (see sandbox.h): candidate-side processes enter the
+-// isolation boundary through a plain-built launcher helper, never
+-// through fork() in the grader — fork+unshare fails under TSan, so the
+-// grader only ever posix_spawns the helper, which confines itself.
++// Wrapper-local parent side of the fixed, task-contained candidate boundary.
+ #include "sealed/sandbox.h"
+-
+ #include <sys/wait.h>
++#include <signal.h>
+ #include <unistd.h>
+-
+ #include <cstdio>
++#include <fstream>
+ #include <sstream>
+ #include <string>
+ #include <vector>
+ 
+ namespace sealed {
+ namespace {
+-
+-int g_helper_seq = 0;
+-
+-int RunCmd(const std::string& cmd, std::string* out = nullptr) {
+-  std::string full = cmd + " 2>&1";
+-  FILE* p = popen(full.c_str(), "r");
+-  if (!p) return 127;
+-  char buf[4096];
+-  std::string acc;
+-  while (fgets(buf, sizeof buf, p)) acc += buf;
+-  int rc = pclose(p);
+-  if (out) *out = acc;
+-  return WIFEXITED(rc) ? WEXITSTATUS(rc) : 128;
++std::string Field(int pid, const char* name) {
++  std::ifstream f("/proc/" + std::to_string(pid) + "/status");
++  std::string line;
++  while (std::getline(f, line))
++    if (line.rfind(std::string(name) + ":", 0) == 0)
++      return line.substr(line.find(':') + 1);
++  throw RemoteError("boundary: missing parent-readable proc status");
+ }
+-
+-std::string ShellQuote(const std::string& s) {
+-  std::string o = "'";
+-  for (char ch : s) {
+-    if (ch == '\'') o += "'\\''";
+-    else o += ch;
++std::vector<unsigned long long> Numbers(int pid, const char* key, int base=10) {
++  std::istringstream s(Field(pid, key));
++  if (base == 16) s >> std::hex;
++  std::vector<unsigned long long> v;
++  unsigned long long n;
++  while (s >> n) v.push_back(n);
++  return v;
++}
++void Attest(int pid, unsigned long long baseline_filters) {
++  const std::vector<unsigned long long> identity(4, 60001);
++  const std::vector<unsigned long long> zero{0}, one{1};
++  if (Numbers(pid, "Uid") != identity || Numbers(pid, "Gid") != identity ||
++      !Numbers(pid, "Groups").empty() ||
++      Numbers(pid, "CapEff", 16) != zero ||
++      Numbers(pid, "CapPrm", 16) != zero ||
++      Numbers(pid, "CapInh", 16) != zero ||
++      Numbers(pid, "CapAmb", 16) != zero ||
++      Numbers(pid, "CapBnd", 16) != zero ||
++      Numbers(pid, "NoNewPrivs") != one ||
++      Numbers(pid, "Seccomp") != std::vector<unsigned long long>{2} ||
++      Numbers(pid, "Seccomp_filters") !=
++        std::vector<unsigned long long>{baseline_filters + 1})
++    throw RemoteError("boundary: identity/capabilities/filter attestation failed");
++}
++} // namespace
++Spawned SpawnSandboxed(const char* binary, const std::string& newroot,
++                       const std::vector<std::string>& args) {
++  auto baseline = Numbers(getpid(), "Seccomp_filters");
++  if (baseline.size() != 1) throw RemoteError("boundary: no filter accounting");
++  std::vector<std::string> hargs{newroot, binary, ""};
++  hargs.insert(hargs.end(), args.begin(), args.end());
++  Spawned sp = SpawnChild("/opt/efs-sandbox-helper", hargs, nullptr);
++  try {
++    bool stopped = false;
++    for (int i=0; i<100; ++i) {
++      int status=0;
++      if (waitpid(sp.pid, &status, WNOHANG | WUNTRACED) == sp.pid) {
++        if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP)
++          throw RemoteError("boundary: trusted setup exited before attestation " +
++            std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : 128));
++        stopped = true; break;
++      }
++      usleep(50000);
++    }
++    if (!stopped) throw RemoteError("boundary: setup timeout");
++    Attest(sp.pid, baseline[0]);
++    std::printf("[boundary] pid=%d uid=60001 gid=60001 groups=empty "
++                "caps=zero nnp=1 additional-filter=attested\n", sp.pid);
++    if (kill(sp.pid, SIGCONT) != 0) throw RemoteError("boundary: continue failed");
++    return sp;
++  } catch (...) {
++    kill(sp.pid, SIGKILL); waitpid(sp.pid, nullptr, 0); close(sp.fd); throw;
+   }
+-  return o + "'";
+ }
+-
+-}  // namespace
+-
+-Spawned SpawnSandboxed(const char* binary,
+-                       const std::string& newroot,
+-                       const std::vector<std::string>& args) {
+-  // The launcher is intentionally built with plain flags on every use:
+-  // it must stay free of sanitizer runtimes (whose fork/unshare
+-  // behavior differs), and rebuilding keeps it in sync with its source.
+-  // Per-call unique path: concurrent runs must never exec a binary
+-  // that another run is still recompiling. Verifier-owned tooling,
+-  // never candidate input.
+-  std::string helper = "/tmp/efs-sandbox-helper-" +
+-                       std::to_string((long long)getpid()) + "-" +
+-                       std::to_string(++g_helper_seq);
+-  std::string log;
+-  std::string cmd = "g++ -std=c++20 -O2 sealed/sandbox_helper.cpp -o " +
+-                    ShellQuote(helper);
+-  if (RunCmd(cmd, &log) != 0)
+-    throw RemoteError("sandbox helper build failed:\n" + log);
+-  // helper argv: <newroot> <binary> <self> <user args...>; the
+-  // launcher unlinks <self> via the old root after pivoting, so
+-  // one-shot launchers never accumulate in /tmp.
+-  std::vector<std::string> hargs = {newroot, binary, helper};
+-  hargs.insert(hargs.end(), args.begin(), args.end());
+-  return SpawnChild(helper.c_str(), hargs, nullptr);
+-}
+-
+-}  // namespace sealed
++} // namespace sealed
+--- a/sealed/sandbox.h
++++ b/sealed/sandbox.h
+@@ -8,19 +8,14 @@
+ 
+ namespace sealed {
+ 
+-// Like SpawnChild, but the child runs with an enforceable isolation
+-// boundary before exec:
+-//   - user + mount + network namespaces (unprivileged);
+-//   - pivot_root into newroot: absolute paths outside newroot stop
+-//     resolving; /proc, /tmp siblings, and the repo are gone;
+-//   - only fds 0,1,2 and the channel (fd 3) survive; everything else
+-//     inherited from the verifier is closed;
+-//   - args prefixed with "<newroot>/" are rewritten to root-relative
+-//     paths (the old absolute prefix is meaningless after the pivot).
+-// newroot must contain the staged image (binary included or
+-// bind-mounted by this call from `binary`).
+-// Fails closed: any setup failure aborts the child before exec, which
+-// surfaces as a spawn/reap error — never as a silently unsandboxed run.
++// Candidate-only execution boundary: fixed chroot with image-owned runtime,
++// distinct UID/GID 60001, empty groups/capabilities, no_new_privs, appended
++// syscall allowlist, resource bounds, descriptor scrub, and parent-side
++// pre-exec attestation. Stock runtime controls are unchanged. No namespace or
++// mount syscall is requested. Only /work and /tmp are writable; procfs and
++// hidden grading paths are absent. New processes/sockets are denied; bounded
++// shared-address-space threads are permitted. Any setup failure aborts before
++// candidate initializers. Paths under newroot are rewritten root-relative.
+ Spawned SpawnSandboxed(const char* binary, const std::string& newroot,
+                        const std::vector<std::string>& args);
+ 
+--- a/sealed/sandbox_helper.cpp
++++ b/sealed/sandbox_helper.cpp
+@@ -1,227 +1,177 @@
+-// Sandbox launcher helper: spawned (not forked) by the grader via
+-// SpawnSandboxed, then confines itself and execs the candidate-side
+-// binary. Split out so no instrumented process ever forks around
+-// namespace setup: fork+unshare fails under TSan, and closing foreign
+-// fds inside an instrumented fork child is fragile. Built with plain
+-// flags always (never sanitizer flags): it is mount plumbing, audited
+-// once, and carries no candidate logic.
+-// Verifier-owned build tooling (never in the candidate image).
+-// Usage: sandbox_helper <newroot> <binary> <self> [args...]
+-// Args prefixed with "<newroot>/" are rewritten root-relative.
+-// <self> is this launcher's own outer path: unlinked via the old root
+-// after the pivot so one-shot launchers never accumulate.
++// Wrapper-local Linux x86-64 candidate launcher. Uses only default container
++// capabilities; never requests namespaces or mounts. Trusted setup copies a
++// fixed runtime, chroots, drops identity/capabilities, adds seccomp, and stops
++// for parent attestation before the candidate's first initializer can execute.
+ #include <dirent.h>
+ #include <fcntl.h>
++#include <grp.h>
++#include <linux/audit.h>
++#include <linux/capability.h>
++#include <linux/filter.h>
++#include <linux/seccomp.h>
++#include <signal.h>
+ #include <sched.h>
+-#include <signal.h>
+-#include <sys/mount.h>
++#include <sys/prctl.h>
++#include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <sys/syscall.h>
+-#include <sys/wait.h>
+ #include <unistd.h>
+-
+ #include <cerrno>
++#include <cstddef>
+ #include <cstdio>
+ #include <cstdlib>
+-#include <cstring>
++#include <filesystem>
+ #include <string>
+ #include <vector>
+ 
+ namespace {
+-
+-void WriteAll(int fd, const char* s) {
+-  size_t n = std::strlen(s);
+-  while (n > 0) {
+-    ssize_t k = write(fd, s, n);
+-    if (k < 0 && errno == EINTR) continue;
+-    if (k <= 0) break;
+-    s += k;
+-    n -= (size_t)k;
++constexpr uid_t kUid = 60001;
++constexpr gid_t kGid = 60001;
++void Die(const char* what) { std::perror(what); _exit(25); }
++void Limit(int kind, rlim_t value) {
++  rlimit r{value, value};
++  if (setrlimit(kind, &r) != 0) Die("efs limit");
++}
++void Filter() {
++  std::vector<sock_filter> b;
++  auto stmt = [&](unsigned short c, unsigned k) {
++    b.push_back(sock_filter{c, 0, 0, k});
++  };
++  auto jump = [&](unsigned short c, unsigned k, unsigned char t,
++                  unsigned char f) { b.push_back(sock_filter{c, t, f, k}); };
++  stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch));
++  jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
++  stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
++  stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr));
++  // Only self-signalling is needed for the pre-exec stop and libc abort.
++  for (int nr : {SYS_kill, SYS_tgkill}) {
++    jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 4);
++    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, args[0]));
++    jump(BPF_JMP | BPF_JEQ | BPF_K, getpid(), 0, 1);
++    stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
++    stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
+   }
++  // Permit only CLONE_THREAD + shared-address-space thread creation. libc
++  // falls back from clone3 when ENOSYS is returned; no process may be forked.
++  jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_clone3, 0, 1);
++  stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS);
++  jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_clone, 0, 5);
++  stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, args[0]));
++  stmt(BPF_ALU | BPF_AND | BPF_K, CLONE_THREAD | CLONE_VM | CLONE_SIGHAND);
++  jump(BPF_JMP | BPF_JEQ | BPF_K,
++       CLONE_THREAD | CLONE_VM | CLONE_SIGHAND, 0, 1);
++  stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
++  stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
++  // The RPC driver requires no new processes or sockets.
++  // fork/vfork/clone/clone3/setsid, socket/socketpair/connect, ptrace,
++  // process_vm_*, io_uring, mount, namespace, and privilege calls are absent.
++  for (int nr : {SYS_read, SYS_write, SYS_pread64, SYS_readv, SYS_writev, SYS_close,
++       SYS_openat, SYS_newfstatat, SYS_fstat, SYS_stat, SYS_lstat,
++       SYS_lseek, SYS_mmap, SYS_mprotect, SYS_munmap, SYS_brk, SYS_mremap,
++       SYS_madvise, SYS_access, SYS_faccessat, SYS_faccessat2, SYS_readlink,
++       SYS_readlinkat, SYS_getdents64, SYS_fcntl, SYS_ioctl, SYS_dup, SYS_dup2,
++       SYS_dup3, SYS_poll, SYS_ppoll, SYS_select, SYS_pselect6,
++       SYS_rt_sigaction, SYS_rt_sigprocmask, SYS_rt_sigreturn,
++       SYS_sigaltstack, SYS_arch_prctl, SYS_set_tid_address,
++       SYS_set_robust_list, SYS_rseq, SYS_futex, SYS_getrandom,
++       SYS_getpid, SYS_getppid, SYS_gettid, SYS_getuid, SYS_geteuid,
++       SYS_getgid, SYS_getegid, SYS_getgroups, SYS_getcwd, SYS_chdir,
++       SYS_clock_gettime, SYS_gettimeofday, SYS_time, SYS_nanosleep,
++       SYS_clock_nanosleep, SYS_sched_yield, SYS_sched_getaffinity,
++       SYS_prlimit64, SYS_getrlimit, SYS_getrusage, SYS_uname,
++       SYS_recvfrom, SYS_sendto, SYS_recvmsg, SYS_sendmsg, SYS_shutdown,
++       SYS_unlink, SYS_unlinkat, SYS_rename, SYS_renameat, SYS_renameat2,
++       SYS_mkdir, SYS_mkdirat, SYS_ftruncate, SYS_fsync, SYS_fdatasync,
++       SYS_execve, SYS_exit, SYS_exit_group}) {
++    jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1);
++    stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
++  }
++  stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
++  sock_fprog p{static_cast<unsigned short>(b.size()), b.data()};
++  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p) != 0)
++    Die("efs install additional seccomp");
+ }
+-
+-// Write a proc control file; returns false on failure. Identity-map
+-// writes are security setup, not best effort: a silent skip would
+-// leave the child over-privileged or unconfined.
+-bool WriteFileChecked(const char* path, const char* s) {
+-  int fd = open(path, O_WRONLY);
+-  if (fd < 0) return false;
+-  size_t n = std::strlen(s);
+-  while (n > 0) {
+-    ssize_t k = write(fd, s, n);
+-    if (k < 0 && errno == EINTR) continue;
+-    if (k <= 0) {
+-      close(fd);
+-      return false;
+-    }
+-    s += k;
+-    n -= (size_t)k;
+-  }
+-  close(fd);
+-  return true;
+-}
+-
+-void MkdirP(const std::string& p) {
+-  if (mkdir(p.c_str(), 0755) == 0) return;
+-  if (errno == EEXIST) {
+-    struct stat st;
+-    // A pre-existing FILE here would silently break a later mount
+-    // (this once hid the staged `proc` binary colliding with /proc).
+-    if (stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return;
+-    _exit(21);
+-  }
+-  _exit(14);
+-}
+-
+-void BindRo(const std::string& src, const std::string& dst) {
+-  if (mount(src.c_str(), dst.c_str(), nullptr, MS_BIND | MS_REC, nullptr) !=
+-      0)
+-    _exit(15);
+-  if (mount(src.c_str(), dst.c_str(), nullptr,
+-            MS_BIND | MS_REMOUNT | MS_RDONLY, nullptr) != 0)
+-    _exit(15);
+-}
+-
+-pid_t g_child = -1;
+-
+-void ForwardTerm(int) {
+-  if (g_child > 0) kill(g_child, SIGTERM);
+-}
+-
+-// Wait for a confined child and forward its status. A signaled child
+-// maps to 128 (fail closed, distinct from clean exit).
+-int WaitForward(pid_t c) {
+-  g_child = c;
+-  int st = 0;
+-  while (waitpid(c, &st, 0) < 0 && errno == EINTR) {
+-  }
+-  if (WIFEXITED(st)) return WEXITSTATUS(st);
+-  return 128;
+-}
+-
+-}  // namespace
++} // namespace
+ 
+ int main(int argc, char** argv) {
+-  if (argc < 4) return 9;
+-  std::string newroot = argv[1];
+-  std::string binary = argv[2];
+-  std::string self = argv[3];
+-  auto slash = binary.find_last_of('/');
+-  std::string name =
+-      (slash == std::string::npos) ? binary : binary.substr(slash + 1);
+-  if (name.empty()) return 9;
+-  // Close every inherited descriptor except 0,1,2 and the channel (3).
+-  // Enumerate /proc/self/fd (unbounded): a fixed 1024 cap would leak
+-  // higher fds into the sandbox.
+-  {
+-    DIR* dd = opendir("/proc/self/fd");
+-    if (!dd) _exit(22);
+-    int dfd = dirfd(dd);
+-    std::vector<int> victims;
+-    struct dirent* e;
+-    while ((e = readdir(dd))) {
+-      if (e->d_name[0] == '.') continue;
+-      int fd = atoi(e->d_name);
+-      if (fd == dfd || fd < 4 || fd == 3) continue;
+-      victims.push_back(fd);
++  if (argc < 4 || getuid() != 0) return 9;
++  namespace fs = std::filesystem;
++  const std::string root = argv[1], binary = argv[2], self = argv[3];
++  const std::string name = fs::path(binary).filename();
++  if (root.empty() || root[0] != '/' || name.empty()) return 9;
++  try {
++    // Only image-owned shared libraries and the trusted-selected executable.
++    fs::copy("/opt/efs-runtime", root,
++             fs::copy_options::recursive | fs::copy_options::overwrite_existing);
++    if (binary != root + "/" + name)
++      fs::copy_file(binary, root + "/" + name,
++                    fs::copy_options::overwrite_existing);
++    for (const auto& e : fs::recursive_directory_iterator(root)) {
++      if (e.is_symlink()) return 26;
++      if (chown(e.path().c_str(), 0, 0) != 0 ||
++          chmod(e.path().c_str(), e.is_directory() ? 0755 : 0555) != 0)
++        Die("efs stage protection");
+     }
+-    closedir(dd);
+-    for (int fd : victims) close(fd);
++    for (const char* dir : {"work", "tmp"}) {
++      const std::string p = root + "/" + dir;
++      fs::remove_all(p);
++      fs::create_directory(p);
++      if (chown(p.c_str(), kUid, kGid) != 0 || chmod(p.c_str(), 0700) != 0)
++        Die("efs work ownership");
++    }
++  } catch (const std::exception& e) {
++    std::fprintf(stderr, "efs stage runtime: %s\n", e.what()); return 26;
+   }
+-  // User, mount, network, and PID namespaces. The PID namespace takes
+-  // effect for children: fork once (plain single-threaded context, so
+-  // this is safe under every sanitizer) and confine the grandchild.
+-  // The middle process waits and forwards the exit status, so the
+-  // grader's reap lifecycle is unchanged.
+-  //
+-  // Capture the caller identity BEFORE unshare: immediately after
+-  // unshare(CLONE_NEWUSER), before any map is written, getuid() in the
+-  // new namespace reads back the overflow id (65534), not our uid —
+-  // snapshotting late writes a map for an id we don't own (EPERM).
+-  uid_t outer_uid = getuid();
+-  gid_t outer_gid = getgid();
+-  if (unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWPID) !=
+-      0)
+-    _exit(11);
+-  char map[64];
+-  std::snprintf(map, sizeof map, "0 %d 1\n", (int)outer_uid);
+-  // setgroups deny is best effort (may be absent); the uid/gid maps are
+-  // fail-closed: without them the child is unconfined.
+-  WriteFileChecked("/proc/self/setgroups", "deny");
+-  if (!WriteFileChecked("/proc/self/uid_map", map)) _exit(23);
+-  std::snprintf(map, sizeof map, "0 %d 1\n", (int)outer_gid);
+-  if (!WriteFileChecked("/proc/self/gid_map", map)) _exit(24);
+-  signal(SIGTERM, ForwardTerm);
+-  pid_t g = fork();
+-  if (g < 0) _exit(10);
+-  if (g > 0) return WaitForward(g);  // middle: reap, forward status
+-  // G is the namespace init. Init ignores most signals, which would
+-  // blunt sanitizer aborts in the target, so fork once more: the real
+-  // target is an ordinary namespace process with normal signal death.
+-  pid_t t = fork();
+-  if (t < 0) _exit(10);
+-  if (t > 0) return WaitForward(t);  // ns-init placeholder: reap only
+-  if (mount(newroot.c_str(), newroot.c_str(), nullptr, MS_BIND | MS_REC,
+-            nullptr) != 0)
+-    _exit(13);
+-  MkdirP(newroot + "/oldroot");
+-  MkdirP(newroot + "/proc");
+-  MkdirP(newroot + "/lib");
+-  MkdirP(newroot + "/lib64");
+-  MkdirP(newroot + "/usr");
+-  MkdirP(newroot + "/usr/lib");
+-  MkdirP(newroot + "/usr/lib64");
+-  BindRo("/lib", newroot + "/lib");
+-  BindRo("/lib64", newroot + "/lib64");
+-  BindRo("/usr/lib", newroot + "/usr/lib");
+-  BindRo("/usr/lib64", newroot + "/usr/lib64");
+-  // Namespace-local /proc: exposes ONLY this PID namespace (the
+-  // sandboxed process itself). Host and verifier processes are in a
+-  // different namespace and are invisible here. hidepid=2 additionally
+-  // hides even namespace peers, so only /proc/self resolves. This
+-  // exists for runtime compatibility (sanitizer stack bounds); it
+-  // reopens no host or verifier visibility.
+-  if (mount("proc", (newroot + "/proc").c_str(), "proc",
+-            MS_NOSUID | MS_NOEXEC | MS_NODEV, "hidepid=2") != 0)
+-    _exit(20);
+-  // The target binary may live outside the new root (adversarial
+-  // doubles): bind it in under its basename.
+-  std::string inner = newroot + "/" + name;
+-  {
+-    int fd = open(inner.c_str(), O_CREAT | O_WRONLY, 0755);
+-    if (fd < 0) _exit(15);
+-    close(fd);
++  // No inherited directory/file descriptor can escape the chroot.
++  DIR* dd = opendir("/proc/self/fd");
++  if (!dd) Die("efs fd enumeration");
++  const int dfd = dirfd(dd);
++  std::vector<int> close_fds;
++  while (dirent* e = readdir(dd)) {
++    if (e->d_name[0] == '.') continue;
++    int fd = std::atoi(e->d_name);
++    if (fd > 3 && fd != dfd) close_fds.push_back(fd);
+   }
+-  if (mount(binary.c_str(), inner.c_str(), nullptr, MS_BIND, nullptr) != 0)
+-    _exit(15);
+-  if (syscall(SYS_pivot_root, newroot.c_str(),
+-              (newroot + "/oldroot").c_str()) != 0)
+-    _exit(16);
+-  if (chdir("/") != 0) _exit(17);
+-  unlink(("/oldroot" + self).c_str());  // best effort, post-exec safe
+-  if (umount2("/oldroot", MNT_DETACH) != 0) _exit(18);
+-  // Scrub the environment: the target must not see operator-owned
+-  // strings (tokens in env vars, cwd history). Nothing in the image
+-  // needs environment variables; sanitizer flags travel at compile
+-  // time via the staging recipe.
++  closedir(dd);
++  for (int fd : close_fds) close(fd);
++  (void)self; // Fixed image-owned helper is never removed.
++  if (chroot(root.c_str()) != 0 || chdir("/work") != 0)
++    Die("efs chroot using existing capability");
++  Limit(RLIMIT_CORE, 0); Limit(RLIMIT_CPU, 45);
++  Limit(RLIMIT_AS, 1ULL << 30); Limit(RLIMIT_FSIZE, 32ULL << 20);
++  Limit(RLIMIT_NPROC, 64); Limit(RLIMIT_NOFILE, 128);
++  alarm(120);
++  if (setgroups(0, nullptr) != 0) Die("efs clear groups");
++  for (int cap = 0; cap <= CAP_LAST_CAP; ++cap)
++    if (prctl(PR_CAPBSET_DROP, cap) != 0) Die("efs drop bounding cap");
++  if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
++    Die("efs no_new_privs");
++  if (setresgid(kGid, kGid, kGid) != 0 ||
++      setresuid(kUid, kUid, kUid) != 0) Die("efs drop identity");
++  __user_cap_header_struct h{_LINUX_CAPABILITY_VERSION_3, 0};
++  __user_cap_data_struct caps[2]{};
++  if (syscall(SYS_capset, &h, caps) != 0) Die("efs clear capabilities");
+   clearenv();
+-  std::string pre = newroot + "/";
+-  std::string exe = "/" + name;
+-  std::vector<std::string> owned;
+-  owned.push_back(exe);
++  setenv("HOME", "/work", 1); setenv("TMPDIR", "/tmp", 1);
++  for (const char* k : {"OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
++                        "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"})
++    setenv(k, "1", 1);
++  std::vector<std::string> owned{"/" + name};
++  const std::string prefix = root + "/";
+   for (int i = 4; i < argc; ++i) {
+     std::string a = argv[i];
+-    if (a == newroot)
+-      owned.push_back("/");
+-    else if (a.compare(0, pre.size(), pre) == 0)
+-      owned.push_back("/" + a.substr(pre.size()));
+-    else
+-      owned.push_back(a);
++    if (a == root) a = "/work";
++    else if (a.compare(0, prefix.size(), prefix) == 0)
++      a = "/" + a.substr(prefix.size());
++    owned.push_back(a);
+   }
+-  std::vector<char*> eargv;
+-  for (auto& s : owned) eargv.push_back(s.data());
+-  eargv.push_back(nullptr);
+-  execv(exe.c_str(), eargv.data());
+-  _exit(19);
+-  return 19;
++  std::vector<char*> args;
++  for (auto& s : owned) args.push_back(s.data());
++  args.push_back(nullptr);
++  Filter();
++  // Only this trusted launcher reaches this stop, after successful filter
++  // installation. The parent checks /proc status before releasing exec.
++  if (kill(getpid(), SIGSTOP) != 0) Die("efs attestation stop");
++  execv(owned[0].c_str(), args.data());
++  Die("efs candidate exec");
+ }
+--- a/grader/profile.cpp
++++ b/grader/profile.cpp
+@@ -67,8 +67,10 @@
+   // Narrowed to exercised single-file sizes (1M/4M exceed the 256 KiB
+   // per-file limit and are not single-file workloads) and the primary
+   // seed (suites use fixed internal seeds; budget workload uses seed0).
+-  // Writers/readers are concurrency limits exercised via deterministic
+-  // sequential + async-overlap (6 in-flight), not OS threads.
++  // Writers/readers are declared limits, NOT consumed: no suite reads
++  // them (see the F-C note in WRAPPER_NOTES.md). Suites use deterministic
++  // sequential calls + async-overlap (async_in_flight, 6 in-flight),
++  // not OS threads; writers/readers are not a tested coverage dimension.
+   // Human review: whether to add multi-file 4M live-total workload
+   // (requires budget re-derive) or update docs scale claims.
+--- a/docs/contract.md
++++ b/docs/contract.md
+@@ -33,6 +33,6 @@
+ |---|---|---|
+ | `read(name, offset, length)` | Slice of one committed version. Clamp at EOF; offset beyond EOF → empty. Linearisation point within invocation/completion. No mixed-version response. Auth/key failure → error, never unauthenticated bytes. |
+ | `put(name, bytes)` | Create/replace whole file atomically. Success = durably committed (published root), not merely queued. Empty files valid. |
+-| `write_range(name, offset, bytes)` | Atomic update of existing file. Offset beyond EOF rejected. In-range offset may extend up to the file-size limit. Untouched ranges preserved. Zero-length = no-op (still a per-file commit). |
++| `write_range(name, offset, bytes)` | Atomic update of existing file. Offset beyond EOF rejected (`INVALID_ARGUMENT`), including for zero-length writes; offset == EOF is a valid commit point (including offset 0 on an empty file). In-range offset may extend up to the file-size limit. Untouched ranges preserved. Zero-length write on an existing file is a literal per-file commit: it seals + publishes a new manifest root and advances the generation with unchanged content bytes, returning `Ok`. Missing file → `NOT_FOUND` with no commit. |
+ | `truncate(name, new_length)` | Shrink only (incl. to zero). Extension rejected. Success = durable per-file commit. |
+ | `rename(from, to)` | Atomic namespace mutation, preserves file ID + contents. Existing destination rejected. Same-name = no-op. No overwrite in H0. |
+--- a/grader/oracle.cpp
++++ b/grader/oracle.cpp
+@@ -18,21 +18,21 @@
+   files[name] = {id, b};
+   return efs::Err::OK;
+ }
+ efs::Err LogicalModel::WriteRange(const std::string& name, uint64_t off,
+                                   const std::vector<uint8_t>& b) {
+   auto it = files.find(name);
+   if (it == files.end()) return efs::Err::NOT_FOUND;
+-  // Zero-length is a no-op if the file exists (matches reference/starter;
+-  // no offset validation, no new generation). Human review: contract says
+-  // "Offset beyond EOF rejected" without a zero-length exception (strict
+-  // reading would reject). This choice preserves the 3-defect repair scope
+-  // (zero-length validation is not a planted defect); a strict reading
+-  // would add a 4th defect and require reference/starter/instruction updates.
+-  // Per-file publication for zero-length is interpreted as immediate
+-  // durability (trivially durable, no new generation), not a new anchor
+-  // generation; human review whether a new generation is required.
+-  if (b.empty()) return efs::Err::OK;
+-  if (off > it->second.bytes.size()) return efs::Err::INVALID_ARGUMENT;
++  // F-A option (a), owner decision 2026-10-30: zero-length write_range on
++  // an existing file is a LITERAL per-file commit. The offset rule has no
++  // zero-length exception (contract: "Offset beyond EOF rejected"), so
++  // offset > EOF is INVALID_ARGUMENT and offset == EOF is a valid commit
++  // point (including offset 0 on an empty file). The driver must seal +
++  // publish a new manifest root / advance the generation with unchanged
++  // content bytes. This logical model carries no generation counter:
++  // bytes are unchanged here, and the suite asserts the generation
++  // advance + durability against the trusted anchor (human review kept).
++  if (off > it->second.bytes.size()) return efs::Err::INVALID_ARGUMENT;
++  if (b.empty()) return efs::Err::OK;
+   if (b.size() > 262144 || off > 262144 - b.size())
+     return efs::Err::INVALID_ARGUMENT;
+   auto& v = it->second.bytes;
+--- a/grader/suites.cpp
++++ b/grader/suites.cpp
+@@ -77,14 +77,65 @@
+   c.Check(m0.WriteRange("block", 4000, tail) == efs::Err::OK, "model ext");
+   c.Check(d0->WriteRange(c0, tw.Op(), "block", 4000, tail).ok(), "ext range");
+   CheckRead(c, d0, c0, "block", m0.files["block"].bytes, "ext bytes");
+-    // Zero-length is a no-op.
+-    c.Check(d0->WriteRange(c0, tw.Op(), "block", 10, {}).ok(), "zero range");
+-    // Beyond EOF rejected.
+-    c.Check(d0->WriteRange(c0, tw.Op(), "block", 999999, {1}).err ==
+-                efs::Err::INVALID_ARGUMENT,
+-            "range beyond EOF");
+-    c.Check(d0->WriteRange(c0, tw.Op(), "nosuch", 0, {1}).err ==
+-                efs::Err::NOT_FOUND,
+-            "range missing");
++    // F-A option (a): zero-length is a LITERAL per-file commit. It seals
++    // + publishes a new manifest root (anchor generation advances) with
++    // unchanged content bytes. Publication durability is verified by the
++    // CheckTenant below ("ordinary ranges") against the trusted anchor.
++    {
++      uint64_t gen_before = tw.world.anchor()->Get(0).generation;
++      auto expect_before = m0.files["block"].bytes;
++      c.Check(m0.WriteRange("block", 10, {}) == efs::Err::OK,
++              "model zero range");
++      c.Check(d0->WriteRange(c0, tw.Op(), "block", 10, {}).ok(),
++              "zero range");
++      c.Check(tw.world.anchor()->Get(0).generation == gen_before + 1,
++              "zero range commits new generation");
++      CheckRead(c, d0, c0, "block", expect_before, "zero range kept");
++    }
++    // Offset == EOF is a valid zero-length commit point (including
++    // offset 0 on an empty file); offset beyond EOF is rejected with
++    // no commit.
++    {
++      uint64_t eof = (uint64_t)m0.files["block"].bytes.size();
++      uint64_t gen_before = tw.world.anchor()->Get(0).generation;
++      c.Check(d0->WriteRange(c0, tw.Op(), "block", eof, {}).ok(),
++              "zero range at EOF");
++      c.Check(tw.world.anchor()->Get(0).generation == gen_before + 1,
++              "zero range at EOF commits");
++      gen_before = tw.world.anchor()->Get(0).generation;
++      c.Check(m0.WriteRange("block", eof + 1, {}) ==
++                  efs::Err::INVALID_ARGUMENT,
++              "model zero range beyond EOF");
++      c.Check(d0->WriteRange(c0, tw.Op(), "block", eof + 1, {}).err ==
++                  efs::Err::INVALID_ARGUMENT,
++              "zero range beyond EOF");
++      c.Check(tw.world.anchor()->Get(0).generation == gen_before,
++              "zero range beyond EOF no commit");
++    }
++    {
++      uint64_t gen_before = tw.world.anchor()->Get(0).generation;
++      c.Check(d0->WriteRange(c0, tw.Op(), "empty", 0, {}).ok(),
++              "zero range empty file");
++      c.Check(tw.world.anchor()->Get(0).generation == gen_before + 1,
++              "zero range empty file commits");
++    }
++    // Zero-length on a missing file: NOT_FOUND with no commit.
++    {
++      uint64_t gen_before = tw.world.anchor()->Get(0).generation;
++      c.Check(m0.WriteRange("nosuch", 0, {}) == efs::Err::NOT_FOUND,
++              "model zero range missing");
++      c.Check(d0->WriteRange(c0, tw.Op(), "nosuch", 0, {}).err ==
++                  efs::Err::NOT_FOUND,
++              "zero range missing");
++      c.Check(tw.world.anchor()->Get(0).generation == gen_before,
++              "zero range missing no commit");
++    }
++    // Beyond EOF rejected.
++    c.Check(d0->WriteRange(c0, tw.Op(), "block", 999999, {1}).err ==
++                efs::Err::INVALID_ARGUMENT,
++            "range beyond EOF");
++    c.Check(d0->WriteRange(c0, tw.Op(), "nosuch", 0, {1}).err ==
++                efs::Err::NOT_FOUND,
++            "range missing");
+   }
+   CheckTenant(c, tw, 0, m0, "ordinary ranges");
+--- a/reference/efs_impl.cpp
++++ b/reference/efs_impl.cpp
+@@ -636,22 +636,38 @@
+                           const std::vector<uint8_t>& bytes) override {
+     if (CheckCap(cap) != Err::OK)
+       return Result<void>::Fail(Err::PERMISSION_DENIED);
+     if (!ValidName(name))
+       return Result<void>::Fail(Err::INVALID_ARGUMENT);
+-    if (bytes.empty()) {
+-      // Zero-length update is a no-op (file must still exist).
+-      auto l = LoadCommitted();
+-      if (!l.ok()) return l;
+-      if (files_.find(name) == files_.end())
+-        return Result<void>::Fail(Err::NOT_FOUND);
+-      return Result<void>::Ok();
+-    }
+     auto l0 = LoadCommitted();
+     if (!l0.ok()) return l0;
+     auto fit = files_.find(name);
+     if (fit == files_.end()) return Result<void>::Fail(Err::NOT_FOUND);
+     if (offset > fit->second.length)
+       return Result<void>::Fail(Err::INVALID_ARGUMENT);
++    if (bytes.empty()) {
++      // F-A option (a): zero-length is a LITERAL per-file commit. Seal +
++      // publish a new manifest root / advance the generation with
++      // unchanged content bytes. No data blocks are resealed (block refs
++      // are reused, only the file content_ver is bumped); the standard
++      // RunOp path seals + publishes the new manifest, so
++      // flush-before-publish holds trivially (no new data objects).
++      return RunOp(op_id, [&]() -> Result<Prepared> {
++        auto it = files_.find(name);
++        if (it == files_.end())
++          return Result<Prepared>::Fail(Err::NOT_FOUND);
++        if (offset > it->second.length)
++          return Result<Prepared>::Fail(Err::INVALID_ARGUMENT);
++        const FileEntry& fe = it->second;
++        uint64_t cver = NextCver(fe.file_id, fe.content_ver + 1);
++        Prepared p;
++        p.epoch = manifest_epoch_;
++        p.files = files_;
++        FileEntry f = fe;
++        f.content_ver = cver;
++        p.files[name] = std::move(f);
++        return Result<Prepared>::Ok(std::move(p));
++      });
++    }
+     uint64_t new_end = offset + bytes.size();
+     if (new_end > kMaxFileSize)
+       return Result<void>::Fail(Err::INVALID_ARGUMENT);
+
+[F-A 2026-10-30 note, outside any hunk: solution/efs_impl.cpp carries the
+identical F-A WriteRange change; its only differences from
+reference/efs_impl.cpp remain the candidate-namespace include + namespace
+lines. environment/bundle/docs/contract.md carries the identical F-A
+contract line (bundle copy, byte-identical to the vendor copy above).]

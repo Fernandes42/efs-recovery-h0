@@ -1,0 +1,18 @@
+{
+  "name": "H4",
+  "writers": 1,
+  "readers": 1,
+  "async_in_flight": 6,
+  "epochs": 1,
+  "snapshots": false,
+  "gc": false,
+  "range_ops": true,
+  "rotation": false,
+  "multi_crash": true,
+  "replay": true,
+  "revocation": false,
+  "outage": false,
+  "workload_bytes": [16384, 65536],
+  "seeds": [11],
+  "removed": ["overlapping GC/revocation/outage stress", "multi-writer overlap", "snapshot/GC lifecycle", "key rotation (single epoch)"]
+}

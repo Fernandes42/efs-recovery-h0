@@ -1,0 +1,18 @@
+{
+  "name": "H2",
+  "writers": 1,
+  "readers": 2,
+  "async_in_flight": 6,
+  "epochs": 3,
+  "snapshots": true,
+  "gc": false,
+  "range_ops": true,
+  "rotation": true,
+  "multi_crash": true,
+  "replay": true,
+  "revocation": false,
+  "outage": false,
+  "workload_bytes": [16384, 65536, 262144],
+  "seeds": [11],
+  "removed": ["overlapping GC/revocation/outage stress", "multi-writer overlap"]
+}

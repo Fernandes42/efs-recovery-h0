@@ -1,0 +1,6 @@
+g++ 11.5.0 (Red Hat 11.5.0-15)
+cmake 3.31.8
+ninja 1.10.2
+OpenSSL 3.5.8 (runtime + headers)
+C++20, Linux x86-64
+No dependencies are fetched during evaluation.

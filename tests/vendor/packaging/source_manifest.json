@@ -1,0 +1,290 @@
+{
+  "version": 2,
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "f9eddd5bc0797b38a2002751184612c2a7111340c8ccdc99543c10dce5047daf"
+    },
+    {
+      "path": "candidate/README.md",
+      "sha256": "d229b44f39b88c215bc6fd15aedb6640805582156b819c56fc5fdffc52c25891"
+    },
+    {
+      "path": "candidate/src/efs_impl.cpp",
+      "sha256": "503c8c8a7024cdc3e093f6cdb0bdf97067b28b1a107e96b9c2b113451f7e8680"
+    },
+    {
+      "path": "candidate/src/efs_impl.h",
+      "sha256": "9565c3dea20ce7684858f2ba524517becdd60873c9d782bb517d177238da304e"
+    },
+    {
+      "path": "docs/contract.md",
+      "sha256": "868b7e67dfa1b30e7accfe1e51313f3f9ff310d2864dae6970147c0a374b5a4b"
+    },
+    {
+      "path": "docs/format.md",
+      "sha256": "306124ce7f7c524e55e27afa319d57269c3a75cd62b256ae1d951e7e5f4a70f7"
+    },
+    {
+      "path": "docs/threat-model.md",
+      "sha256": "ffaecd29c63d456b71306e577dd75217c72dfa9e8063bd503c6d0ab9bc6d091b"
+    },
+    {
+      "path": "grader/fmt.h",
+      "sha256": "197fc0ee47ce7bf70d6e83d2d6310482c8f47ec4530184b105eaab234378bb99"
+    },
+    {
+      "path": "grader/format_parser.cpp",
+      "sha256": "f79d4ab55e2dbca1b8ef205eb5e06c5b79a01f7e65e1bd9435be2d7157c881c1"
+    },
+    {
+      "path": "grader/grader.h",
+      "sha256": "a18984d52c3c901187a267cd0033e69226a195e41acc1d9d1192a2ccbd2a5b66"
+    },
+    {
+      "path": "grader/json.cpp",
+      "sha256": "63694c10e41eed1557f7a709fb7455b2efc68fa9e3e9b12e048980861ea20759"
+    },
+    {
+      "path": "grader/main.cpp",
+      "sha256": "475864690afcf260787c87449b0814806171537768c7e4e35ca7ef5ceb34acdb"
+    },
+    {
+      "path": "grader/oracle.cpp",
+      "sha256": "0781ea06e5db64b934372879f0af8f8c8bf8c4b6ef7eeee122e1d9b43ed5b383"
+    },
+    {
+      "path": "grader/oracle.h",
+      "sha256": "8d85f29b63173f93b20b6ee0f779b5d1c627860118e02cfcaf90057b20db7c9a"
+    },
+    {
+      "path": "grader/profile.cpp",
+      "sha256": "1c40c6485efeb20b5f96b10e3edf1a057fe44b2518a53c4fa9b589bb22f3c4e1"
+    },
+    {
+      "path": "grader/runner.cpp",
+      "sha256": "18e72037024de894364df89236d57433326c5859c6ef6fd32f52a801a2602cb0"
+    },
+    {
+      "path": "grader/runner.h",
+      "sha256": "b86d03c5c9193116c1e4c77e3b28437bf5d99365238201904480fc67b64fe76a"
+    },
+    {
+      "path": "grader/sealed_run.cpp",
+      "sha256": "0cba8dd264a7907ca851d5893739cac735d87d745fede8d985f2d997046dc065"
+    },
+    {
+      "path": "grader/sealed_run.h",
+      "sha256": "4032dab5429acffe33bfbd790b290324b6553442d6907a7590ad808797c90d76"
+    },
+    {
+      "path": "grader/suites.cpp",
+      "sha256": "f391315ed98b26bd15c706935203ace8ace987a8ebc9721d8be86339fd8f2acb"
+    },
+    {
+      "path": "grader/suites.h",
+      "sha256": "49f0d984e12dc7a43f761f68ec49db425d7aeeae5e962277d6f52b90f62a11fe"
+    },
+    {
+      "path": "grader/suites2.cpp",
+      "sha256": "91eccfa5722d9c1cd44187f61a3c05615bdb68d4401b9d023910e6c331f8a786"
+    },
+    {
+      "path": "grader/suites3.cpp",
+      "sha256": "f875394ba7143bf3431fb4bbdd50faf42b0a7ff2a3416d8a3944f29aab757d48"
+    },
+    {
+      "path": "grader/suites_oracle.cpp",
+      "sha256": "f88ec15df8539f2491fa4aeda176c6ed75c51dbd6304a3fceb31db27f40280bc"
+    },
+    {
+      "path": "include/efs/driver.h",
+      "sha256": "808ae6322a4651880cfe9e23348a8699bc640b0c52d3cc944d906af61e130700"
+    },
+    {
+      "path": "include/efs/errors.h",
+      "sha256": "5088c66682d0b2372a8d7174dfe96e3eb89119aa25d40c1b5a2d5302d5432084"
+    },
+    {
+      "path": "include/efs/faults.h",
+      "sha256": "6f0f70d4a51cad51b6a7d6f3fe71ba9faa28afab284e0ab5bd81bee093f8907a"
+    },
+    {
+      "path": "include/efs/hash.h",
+      "sha256": "ab9002a4e7922a24c1752d8e192c75505a8e4ba14492e6dc3438915f91977341"
+    },
+    {
+      "path": "include/efs/services.h",
+      "sha256": "5ff8dd5dcbe434e710f15b4364b596f3f8a22f770fde2d6313d8cd2048b91463"
+    },
+    {
+      "path": "include/efs/types.h",
+      "sha256": "c755d4ce19e3253c8e82fa1ad9e9b76497d2886c8c96cbf9378ea814d466a43b"
+    },
+    {
+      "path": "packaging/README.md",
+      "sha256": "c376ee50143782a687da8eee09b049561d59755160cd82370c9f996c3e63e484"
+    },
+    {
+      "path": "packaging/build_recipe.sh",
+      "sha256": "eb8df4c7139dadff532487647a66629eeeb4cd229716b740a37ac1479b06668a"
+    },
+    {
+      "path": "packaging/toolchain.pins",
+      "sha256": "26cf4cb04f54c9ddaa4d068e047caffafebc4b420f74cd3ef58019e4156ddcb1"
+    },
+    {
+      "path": "packaging/valgrind.supp",
+      "sha256": "2aa0225e6b50a0e9ded0c22785dc581bcffb1e8f499bdece5cc9379dfaeacbc6"
+    },
+    {
+      "path": "profiles/H0.json",
+      "sha256": "ed7df81e7090c72b691b6d3a0a79027326d06d057283fb0b0a519501e24ca0ad"
+    },
+    {
+      "path": "profiles/H1.json",
+      "sha256": "d7dc5b4f307c990a5577e050f884e529a3e4fd0945e566902fb2d18ab2bd4332"
+    },
+    {
+      "path": "profiles/H2.json",
+      "sha256": "f9da1f3481c5a676fa57ff9199b75fe1b8b7bed8debcfe9ebbbf2e77b6cae6e8"
+    },
+    {
+      "path": "profiles/H3.json",
+      "sha256": "5b5317c8e3797bf0113ce9522426a19f906b92c615b636c8473ed7cc20ca6c4b"
+    },
+    {
+      "path": "profiles/H4.json",
+      "sha256": "e83149367e625a6817f000b1656cec81db5b4a823d8b6889f55d0045d7a614e7"
+    },
+    {
+      "path": "profiles/H5.json",
+      "sha256": "b8d26b5082e91177b48705ae971af91fbcd85daa7c1ff44da8e531007652e6f8"
+    },
+    {
+      "path": "profiles/budgets.json",
+      "sha256": "4dfbb0e4c5a60ba8ca4fcd0e6fc62d729aa65aca2d4801ab97a8cff557b706e5"
+    },
+    {
+      "path": "public-tests/pub.h",
+      "sha256": "cbf2a48cb23c0c52ab5f596367abd215cd59a01bcd4d849587981f655e0d8559"
+    },
+    {
+      "path": "public-tests/repro.cpp",
+      "sha256": "ce60f0a1b2499fd832d76dde1b003a9119ad55f17545bcdec5edadeb70a20fcb"
+    },
+    {
+      "path": "public-tests/runner.cpp",
+      "sha256": "d177a30a76b5ccdd9a289523575c04b5009922eac3024aafce317d744cbb6785"
+    },
+    {
+      "path": "public-tests/smoke.cpp",
+      "sha256": "61d17af11a777bd250a4e64bac74e45999a52c6c535c19566dd9b0de7e2b1579"
+    },
+    {
+      "path": "reference/efs_impl.cpp",
+      "sha256": "526eb43d91fd63f6465c711e79a970389a465b3283dd2ce7dbd8b333a7caa3da"
+    },
+    {
+      "path": "reference/efs_impl.h",
+      "sha256": "3b8667797f43f5a67dce48ca8ec748b99c9e125316f01051ac671b93770b6710"
+    },
+    {
+      "path": "sealed/adv_reuse.cpp",
+      "sha256": "94aea1dfc94976f6e900bc31840ceffd1c05eea75cb2d644ced38265dbd80a7a"
+    },
+    {
+      "path": "sealed/adv_snoop.cpp",
+      "sha256": "23327c14e5bfb0980b13df1a0d0f537e9b6c9ee096d214f35a0738c7aae6042c"
+    },
+    {
+      "path": "sealed/adv_xtenant.cpp",
+      "sha256": "a41006e6bd7e5fec4220f5a11588ea98bc85bf7077fc235697acbc90e0821d58"
+    },
+    {
+      "path": "sealed/candidate_main.cpp",
+      "sha256": "cacf6f3031049dcee2adaf7dcee90e871624771e8bf7dd5e0893771d5453dc50"
+    },
+    {
+      "path": "sealed/driver_stub.cpp",
+      "sha256": "780cce33143cab08608fdcbd329f85d035929f3042a305d24dcc806248e30407"
+    },
+    {
+      "path": "sealed/driver_stub.h",
+      "sha256": "5eaf02f12bbb5114fbcd9c8b3265f860e7ab9b16d4c1d08935e514e4fb0bf207"
+    },
+    {
+      "path": "sealed/rpc.cpp",
+      "sha256": "0f84660dfd1cb3e6273282e9dff1387ac91455de48639eb08dc78d5348ebfcf1"
+    },
+    {
+      "path": "sealed/rpc.h",
+      "sha256": "ec48463afc5690153e49d6bf17dffdc3098718d85998499f388308a4891a8b2d"
+    },
+    {
+      "path": "sealed/sandbox.cpp",
+      "sha256": "c4061460e7f34c6ba03e1abbaf26314d7734426a426e140b60ca53e00589ff4e"
+    },
+    {
+      "path": "sealed/sandbox.h",
+      "sha256": "433c1e6cfdca7206d6f95481f1d4753303489b291dd1569c45d8f5ffef2834a7"
+    },
+    {
+      "path": "sealed/sandbox_helper.cpp",
+      "sha256": "051ed5b067c87de19ddbb619928d096a5b427301441f488f700851b3bf3fc738"
+    },
+    {
+      "path": "sealed/service_proxy.cpp",
+      "sha256": "9357ad6b068b1420aeb0b15509e16311f3a1461bcfd31297988e1dc876bf8210"
+    },
+    {
+      "path": "sealed/service_proxy.h",
+      "sha256": "ca4399a52eb15a4a8d19c029afa8640fb109d7198f631a2c8644374f9b6e1fcc"
+    },
+    {
+      "path": "sealed/sha256.cpp",
+      "sha256": "ab3c6fd8c7a5c2c2d5483e5dc08f6bcc98ae699dd8d51756a705d524c9eac9f0"
+    },
+    {
+      "path": "sealed/sha256.h",
+      "sha256": "72477a7b318a8902cc8d91d6e228cfaa15f80338d5d035291c83a7341a344692"
+    },
+    {
+      "path": "sealed/sha256_efs.cpp",
+      "sha256": "7557dc0da43f6ea6500a6c3b26bc278267bef4604b951929e0922440f0a05dcc"
+    },
+    {
+      "path": "trusted/admin.h",
+      "sha256": "e55b2f58d0cc0f0e5d44dee166bf406ddebb7956ed7b3850748bb2ed672abbf8"
+    },
+    {
+      "path": "trusted/allocator.cpp",
+      "sha256": "492a6ca5c77baea2687c05e145fdbb05ee558acc2fc85d7d7fb93827f61c9e38"
+    },
+    {
+      "path": "trusted/anchor.cpp",
+      "sha256": "230d7871e96d4ee241dd5158be6e02277b8350d1fb97b3d64f2bf9e0278500f8"
+    },
+    {
+      "path": "trusted/crypto_broker.cpp",
+      "sha256": "41c56a33c9192e07e5496945109eabb9203d41957731b16cb44517ee6f360dbe"
+    },
+    {
+      "path": "trusted/impl.h",
+      "sha256": "1ed7aab95eb38bf7c28b27280f1ff30412741f1eb8781364cee45e9c42383ec7"
+    },
+    {
+      "path": "trusted/storage.cpp",
+      "sha256": "13a54296a61a8ecf809e462b2a01bb6c5a57428626b3cadb0280f9067e931579"
+    },
+    {
+      "path": "trusted/world.cpp",
+      "sha256": "c058fd4440af046b81d82aa34012757cfc404e0eeb4c455bc456958aabe19cf8"
+    },
+    {
+      "path": "trusted/world.h",
+      "sha256": "ad411ea2102a9e00e565a83061cb23c56665fa8b85ae1386b3edabc24da21c98"
+    }
+  ],
+  "note": "manifest excludes itself; verify with: python3 -c \"import hashlib,json; m=json.load(open(\"packaging/source_manifest.json\")); print(all(hashlib.sha256(open(e[\"path\"],\"rb\").read()).hexdigest()==e[\"sha256\"] for e in m[\"files\"]))\""
+}

@@ -1,0 +1,21 @@
+# Valgrind suppressions for EFS evaluation runs.
+#
+# openssl35-gcm: OpenSSL 3.5's assembly-optimized GCM final triggers
+# "conditional jump depends on uninitialised value" inside libcrypto with
+# no origin in caller buffers (--track-origins attributes nothing to
+# project code). All inputs we pass (nonce, AAD, ciphertext, output) are
+# fully initialized; results are byte-correct. Standard library-internal
+# noise; suppressed here so the gate stays sensitive to project-code
+# errors (invalid reads/writes, leaks, use-after-free).
+{
+  openssl35-gcm-decryptfinal-cond
+  Memcheck:Cond
+  ...
+  fun:EVP_DecryptFinal_ex
+}
+{
+  openssl35-gcm-encryptfinal-cond
+  Memcheck:Cond
+  ...
+  fun:EVP_EncryptFinal_ex
+}

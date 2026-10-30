@@ -1,0 +1,91 @@
+{
+  "original_package": "/home/jfernandes33/efs-eval-h0",
+  "wrapper_vendor": "/home/jfernandes33/efs-harbor-wrap/efs-recovery-h0/tests/vendor",
+  "note": "Modified wrapper-local vendor. Original is read-only. Includes independently identified initial-wrapper modifications, Codex changes, the 2026-10-30 Muse comment-only F-C fix (grader/profile.cpp), and the 2026-10-30 Muse F-A fix (zero-length literal per-file commit: docs/contract.md, grader/oracle.cpp, grader/suites.cpp, reference/efs_impl.cpp). F-A original_sha256 values are taken from the original-manifest snapshot embedded in vendor-local.patch (pre-change wrapper hashes equaled original for contract/suites/reference; oracle.cpp had an intermediate no-op-comment change ce3da8c2 not separately pinned). Human review required.",
+  "files": [
+    {
+      "path": "grader/sealed_run.cpp",
+      "original_sha256": "8ab684c4206db8040c15b4016f4afcff8dd8ddb4df48189d882613d017e941e9",
+      "initial_wrapper_sha256": "528ce72c8bd25fb77671e264ce36a5be2f0a7b2e86cdc7ae86e458ca69f1bc48",
+      "wrapper_sha256": "2022c4d5e654b97388278f2de59a3b49eb38c5ab06c01f2eb8c6cfc9aff8b2f8",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "grader/profile.cpp",
+      "original_sha256": "f1c6deea5ae475638445f21bbc2c1be1cd93f75c328948c15a297b86069158cd",
+      "initial_wrapper_sha256": "f1c6deea5ae475638445f21bbc2c1be1cd93f75c328948c15a297b86069158cd",
+      "wrapper_sha256": "1c40c6485efeb20b5f96b10e3edf1a057fe44b2518a53c4fa9b589bb22f3c4e1",
+      "changed_in_codex_lane": false
+    },
+    {
+      "path": "packaging/source_manifest.json",
+      "original_sha256": "42228757ef6ad760aa02e65a977506ef11db16b4c657f264664dddb85432d48f",
+      "initial_wrapper_sha256": "3fe51e2a4a7f0acc4f5c39432a739327decdf285514672c6f824abe46982648b",
+      "wrapper_sha256": "93826927d2ff45200bc1d2b0b159868d882bd9168bb3dfc212043c90afed2807",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "sealed/adv_snoop.cpp",
+      "original_sha256": "c4d67e5fa7c7688f17ab79389ec052f2e3b440ae4516bf48db59a61d43292244",
+      "initial_wrapper_sha256": "223fc4ffa6def9da30828532b1a30da3709a101095d273e3e2b22266690bf254",
+      "wrapper_sha256": "23327c14e5bfb0980b13df1a0d0f537e9b6c9ee096d214f35a0738c7aae6042c",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "sealed/rpc.cpp",
+      "original_sha256": "bd0a03a948ace9cdda3e9a49072ce381b9b60bb831899fdda9f555175e8afa69",
+      "initial_wrapper_sha256": "da8c9bed78b2cdb855e519b2925995e1d5aab11d0c17ac1b29b683493261e254",
+      "wrapper_sha256": "28bd279e33608aad081b0fb45152999b10e8b7868efac8c9af3b82007f19713f",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "sealed/sandbox.cpp",
+      "original_sha256": "490125de84ff3b394ad0b4ef424943c72653026505f8b561c918c6c9df587132",
+      "initial_wrapper_sha256": "490125de84ff3b394ad0b4ef424943c72653026505f8b561c918c6c9df587132",
+      "wrapper_sha256": "c4061460e7f34c6ba03e1abbaf26314d7734426a426e140b60ca53e00589ff4e",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "sealed/sandbox.h",
+      "original_sha256": "f76313b316a27e7750fc85afdf94520b3d5c7f3533d3dca120bc32517a2a349a",
+      "initial_wrapper_sha256": "f76313b316a27e7750fc85afdf94520b3d5c7f3533d3dca120bc32517a2a349a",
+      "wrapper_sha256": "433c1e6cfdca7206d6f95481f1d4753303489b291dd1569c45d8f5ffef2834a7",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "sealed/sandbox_helper.cpp",
+      "original_sha256": "8d0e4c592027eae567c04ed6f3d6722af38a2fd7b97940faff105e92a297b032",
+      "initial_wrapper_sha256": "8d0e4c592027eae567c04ed6f3d6722af38a2fd7b97940faff105e92a297b032",
+      "wrapper_sha256": "051ed5b067c87de19ddbb619928d096a5b427301441f488f700851b3bf3fc738",
+      "changed_in_codex_lane": true
+    },
+    {
+      "path": "docs/contract.md",
+      "original_sha256": "eb8341ec7fe0d48ecd9c0cff0f16db9b471b5b9355ccf03a7faac9f15e6dde43",
+      "initial_wrapper_sha256": "eb8341ec7fe0d48ecd9c0cff0f16db9b471b5b9355ccf03a7faac9f15e6dde43",
+      "wrapper_sha256": "868b7e67dfa1b30e7accfe1e51313f3f9ff310d2864dae6970147c0a374b5a4b",
+      "changed_in_codex_lane": false
+    },
+    {
+      "path": "grader/oracle.cpp",
+      "original_sha256": "47404d806ea8e83899264fd1b9d951e4fb67cec2898a5ea645f0c21d79c1383c",
+      "initial_wrapper_sha256": "ce3da8c23c34ee3696cb90f00a38527c7486db11cc07a77b00e2794bb5805988",
+      "wrapper_sha256": "0781ea06e5db64b934372879f0af8f8c8bf8c4b6ef7eeee122e1d9b43ed5b383",
+      "changed_in_codex_lane": false
+    },
+    {
+      "path": "grader/suites.cpp",
+      "original_sha256": "191b79603d068a4955d8501cac1fad23a501b49223ea0bbbeada1adabb726c7c",
+      "initial_wrapper_sha256": "191b79603d068a4955d8501cac1fad23a501b49223ea0bbbeada1adabb726c7c",
+      "wrapper_sha256": "f391315ed98b26bd15c706935203ace8ace987a8ebc9721d8be86339fd8f2acb",
+      "changed_in_codex_lane": false
+    },
+    {
+      "path": "reference/efs_impl.cpp",
+      "original_sha256": "61a00d322611421d6e675bfdbd6a34032bbc3930648f7ad6368c261653bf07b6",
+      "initial_wrapper_sha256": "61a00d322611421d6e675bfdbd6a34032bbc3930648f7ad6368c261653bf07b6",
+      "wrapper_sha256": "526eb43d91fd63f6465c711e79a970389a465b3283dd2ce7dbd8b333a7caa3da",
+      "changed_in_codex_lane": false
+    }
+  ]
+}
